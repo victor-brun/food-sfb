@@ -306,7 +306,7 @@ aov_fish = aov(Fish_quantity ~ Barangay, data = df.hous)
 summary(aov_fish)
 
 # GLM
-glm_fish <- glm(Fish_quantity ~ Barangay, data = df.hous)
+glm_fish <- glm(Fish_quantity ~ Barangay + Sex, data = df.hous)
 plot_model(glm_fish, show.values = TRUE, value.offset = .4,
            title = "Fish consumption depending on village surveyed")
 

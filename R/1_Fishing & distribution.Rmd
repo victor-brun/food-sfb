@@ -1,0 +1,761 @@
+---
+title: "1_Cleaning"
+author: "Victor Brun"
+date: "2023-02-21"
+output: html_document
+---
+
+# 1. Data & packages
+
+```{r, message=FALSE, warning=FALSE}
+rm(list=ls())
+
+library(readxl)
+library(PupillometryR)
+library(ggpubr)
+library(ggplot2)
+library(tidyverse)
+library(fishualize)
+library(sjPlot)
+library(cowplot)
+library(rfishbase)
+library(rstatix)
+library(ggpubr)
+library(hrbrthemes)
+
+## Loading data
+
+df_cons <- read_xlsx("./../Data/Consumption_SFB.xlsx", sheet = 1) # Consumption data
+df_hous <- read_xlsx("./../Data/Consumption_SFB.xlsx", sheet = 2) # Metadata on households for consumption data
+df_itw <- read_xlsx("./../Data/Consumption_interview.xlsx", sheet = 1) # Qualitative interviews of locals on consumption
+df_fishers <- read_xlsx("./../Data/Fisherfolks.xlsx", sheet = 1) %>%  # Census of active fishers
+  mutate(Dest_t = ifelse(Dest_t %in% c("Direct export", "Market","Middleman"), "Export", Dest_t))
+df_landings <- read_xlsx("./../Data/Fishing_sessions.xlsx", sheet = 1) # Data on fishing landings
+df_sessions <- read_xlsx("./../Data/Fishing_sessions.xlsx", sheet = 2) # Data on fishing sessions
+df_wealth <- read.csv("./../Data/Wealth.csv")
+
+# Left join to add metadata to consumption data
+df_cons <- df_cons %>% 
+  select(-ID_survey) %>% 
+  left_join(df_hous, by = "Questionnaire")
+
+# Left join to add metadata to fish landings
+df_landings <- df_landings %>% left_join(df_sessions, by = "ID")
+
+# Theme for graphs
+theme_perso <- function(){
+  theme_bw() +
+    theme(text = element_text(family = "Helvetica Light"),
+          axis.line.x = element_line(color="black"), 
+          axis.line.y = element_line(color="black"),
+          panel.border = element_blank(),
+          panel.grid.major.x = element_blank(),                                          
+          panel.grid.minor.x = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          panel.grid.major.y = element_blank(),  
+          plot.margin = unit(c(0.2, 0.2, 0.2, 0.2), units = , "cm"),
+          legend.title = element_blank(),                              
+          legend.key = element_blank(),
+          legend.background = element_rect(color = "black", 
+                                           fill = "transparent", 
+                                           size = 2, linetype = "blank"))
+}
+```
+
+# 2. Data format & computing new variables
+
+```{r message=FALSE, warning=FALSE}
+
+# Consumption
+df_cons[, c(1:6, 11:12)] <- lapply(df_cons[, c(1:6, 11:12)], factor)
+df_cons[, c(7:11, 14:35)] <- lapply(df_cons[, c(7:11, 14:35)], as.numeric)
+
+# Households
+df_hous[, c(1:6, 8, 9, 14:20, 24:30)] <- lapply(df_hous[, c(1:6, 8, 9, 14:20, 24:30)], factor)
+df_hous[, c(7, 10:13, 21:23)] <- lapply(df_hous[, c(7, 10:13, 21:23)], as.numeric)
+
+# Interviews
+df_itw[, c(1:5, 7:54)] <- lapply(df_itw[, c(1:5, 7:54)], factor)
+
+# Fisherfolks
+df_fishers[, c(1:7, 9:19, 21, 22, 24:26, 28)] <- lapply(df_fishers[, c(1:7, 9:19, 21, 22, 24:26, 28)], factor)
+df_fishers[, c(8, 20, 23, 27)] <- lapply(df_fishers[, c(8, 20, 23, 27)], as.numeric)
+
+# Landings
+df_landings[, 1:4] <- lapply(df_landings[, 1:4], factor)
+df_landings[, 5:7] <- lapply(df_landings[, 5:7], as.numeric)
+
+# Sessions
+df_sessions[, c(1, 3:12, 16, 19, 20, 23, 24, 27)] <- lapply(df_sessions[, c(1, 3:12, 16, 19, 20, 23, 24, 27)] , factor)
+df_sessions[, 2] <- lapply(df_sessions[, 2], as.Date)
+df_sessions[, c(13:15, 17, 18, 21, 22, 25, 26)] <- lapply(df_sessions[, c(13:15, 17, 18, 21, 22, 25, 26)], as.numeric)
+
+## Adding variables to consumption data
+
+# Size of household
+df_hous$N_household <- df_hous$N_adults_hh+df_hous$N_children_hh
+
+# Livelihood of household: fisher, farmer, fisher & farmer,  other livelihood
+df_hous <- df_hous %>%
+  mutate(Fisher = case_when(if_any(starts_with("Job"), ~ .x == "Fishing") ~ "Yes"),
+         Farmer = case_when(if_any(starts_with("Job"), ~ .x == "Farming") ~ "Yes"),
+         Fisher_farmer = case_when(if_all(c(Fisher, Farmer), ~ .x == "Yes") ~ "Yes"),
+         Other_livelihood = case_when(if_all(c(Fisher, Farmer, Fisher_farmer), ~ is.na(.x)) ~ "Yes"),
+         Livelihood_x = case_when(Fisher == "Yes" ~ "Fisher",
+                                Farmer == "Yes" ~ "Farmer",
+                                Other_livelihood == "Yes" ~ "Other livelihood"),
+         Livelihood = case_when(Fisher_farmer == "Yes" ~ "Fisher & farmer", TRUE ~ Livelihood_x),
+         Livelihood = as.factor(Livelihood)) %>% 
+  select(-Fisher, -Farmer, -Fisher_farmer, -Other_livelihood, -Livelihood_x)
+
+# Fisher Yes or No
+df_hous <- df_hous %>% 
+  mutate(Fisher = case_when(if_any(starts_with("Job"), ~ .x == "Fishing") ~ "Yes",
+                            TRUE ~ "No"))
+
+# Number of meals surveyed per household
+df_hous <- df_cons %>%
+  filter(Meal != "Snack") %>%
+  group_by(Questionnaire, Day, Meal) %>% 
+  summarize(N_food_items= n(), .groups = 'drop') %>% 
+  group_by(Questionnaire) %>%
+  summarize(N_meals = n()) %>% 
+  right_join(df_hous, by = "Questionnaire")
+
+# Making dry fish 2x heavier to estimate original nutrient content
+df_cons <- df_cons %>% 
+  mutate(Food_quantity = case_when(Food_type == "Dry fish" ~ Food_quantity*2,
+                                   TRUE ~ Food_quantity))
+
+# Compute average per capita fish consumption (per meal then average)
+df_hous <- df_cons %>%
+  left_join(select(df_hous, Questionnaire, N_meals), by = "Questionnaire") %>% 
+  mutate(Fish_quantity = ifelse(Food_type %in% c("Fish", "Dry fish"), Food_quantity/(N_adults+N_children), 0)) %>% 
+  group_by(Questionnaire, Day, Meal) %>% 
+  summarize(Fish_quantity_meal = sum(Fish_quantity), .groups = 'drop') %>% 
+  group_by(Questionnaire) %>% 
+  summarize(Fish_quantity_average = mean(Fish_quantity_meal, na.rm=T)*3*365) %>% # Average per year
+  right_join(df_hous, by = "Questionnaire")
+
+
+# Computing capture per day (only affecting fish fences as they are active over several days)
+df_sessions <- df_sessions %>%
+  mutate(Days_fishing = ifelse(Gear == "Fish fence", Time_fish/24, 1)) %>% 
+  mutate(Catch_day = ifelse(Gear == "Fish fence", Capture_kg/Days_fishing, Capture_kg))
+
+```
+
+# 3. Descriptive statistics on fishing
+
+Through two fisherfolk censuses (2019 and 2022), we identified 464 fishers in the bay
+
+```{r}
+# Fisherfolks
+nrow(df_fishers) # 662 observations
+length(unique(df_fishers$Name)) # 464 unique fishers
+summary(df_fishers$Gender) # F 10, M 652
+summary(df_fishers$Barangay) # 206 Batas, 167 Depla, 115 Mabini, 57 Sandoval, 117 Silanga
+mean(df_fishers$Fishing_days)
+sd(df_fishers$Fishing_days) # Fishers are active 5.2 days on average (SD = 2.28)
+
+# Fishing sessions
+summary(c(df_fishers$Gear_1, df_fishers$Gear_2, df_fishers$Gear_3)) # 2 FAD, 49 fish corrals, 220 gillnets, 24 handpick, 257 hook and line, 4 liftnet, 7 longline, 5 seine, 156 speargun, 28 traps, 7 blast, 6 dynamite, 1 beach seine
+summary(c(df_fishers$Hab_1, df_fishers$Hab_2)) # 464 coral reef, 6 Mangrove, 56 seagrass, 186 soft bottom
+summary(df_fishers$Dest_t) # Destination of fish: 1 export, 27 market, 273 middleman, 32 subsistence, 119 village
+summary(df_fishers$Dest_q) # 8 Dry, 398 fresh, 11 live
+summary(df_fishers$Dest_p[df_fishers$Dest_q == "Fresh"])
+sd(df_fishers$Dest_p[df_fishers$Dest_q == "Fresh"], na.rm=T) # Price: 20 to 500 PhP, mean = 67.98 (SD = 42.66)
+
+```
+# 4. Dataviz fisheries
+
+```{r}
+## Gears used (census)
+df_fishers %>%
+  select(Barangay, Year, Gear_1, Gear_2, Gear_3) %>%
+  pivot_longer(c(Gear_1, Gear_2, Gear_3), names_to = "Gear_number", values_to = "Gear") %>%
+  filter(!is.na(Gear)) %>%
+  group_by(Year, Barangay) %>%
+  count(Gear, name = "N") %>%
+  ungroup() %>% 
+  filter(Gear != "Blast", Gear != "Cyanide") %>% 
+  ggplot(., aes(x = Barangay, y = N, fill = Gear)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(vars(Year)) +
+  labs(x = "", y ="Number of gears") +
+  theme_minimal()
+
+## Habitats fished
+df_fishers %>%
+  select(Barangay, Year, Hab_1, Hab_2) %>%
+  pivot_longer(c(Hab_1, Hab_2), names_to = "Habitat_number", values_to = "Habitat") %>%
+  filter(!is.na(Habitat)) %>%
+  group_by(Year, Barangay) %>%
+  count(Habitat, name = "N") %>%
+  ungroup() %>% 
+  ggplot(., aes(x = Barangay, y = N, fill = Habitat)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(vars(Year)) +
+  labs(x = "", y ="Number of fishers") +
+  theme_minimal()
+
+##  Fishing effort
+df_fishers %>% 
+  select(Year, Barangay, Fishing_days) %>%
+  group_by(Year, Barangay) %>% 
+  summarise(Effort = sum(Fishing_days), .groups = "drop") %>%
+  ggplot(., aes(x = Barangay, y = Effort, fill = Year)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "", y = "Effort (fishing days)") +
+  theme_minimal()
+
+## Fishing effort 2019 vs. 2022
+df_fishers %>% 
+  select(Year, Barangay, Fishing_days) %>%
+  group_by(Year) %>% 
+  summarise(Effort = sum(Fishing_days), .groups = "drop") %>%
+  ggplot(., aes(x = Year, y = Effort, fill = Year)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "", y = "Effort (fishing days)") +
+  theme_minimal()
+
+## Habitats fished
+df_fishers %>%
+  select(Barangay, Hab_1, Hab_2) %>%
+  pivot_longer(c(Hab_1, Hab_2), names_to = "Habitat_number", values_to = "Habitat") %>%
+  filter(!is.na(Habitat)) %>%
+  group_by(Barangay) %>%
+  count(Habitat, name = "N") %>%
+  ungroup() %>% 
+  ggplot(., aes(x = Barangay, y = N, fill = Habitat)) +
+  geom_bar(stat = "identity", position = "fill", alpha = .9) +
+  labs(x = "", y ="Number of fishers", fill = "Habitat fished") +
+  scale_fill_fish_d(option = "Epinephelus_marginatus") +
+  theme_minimal()
+
+## Locality of fishing
+
+df_fishers %>%
+  filter(!is.na(Ground_1)) %>%
+  select(Ground_1, Barangay) %>% 
+  mutate(Fishing_locally = ifelse(as.character(Barangay) == as.character(Ground_1), "Yes", "No")) %>%  
+  ungroup() %>%
+  group_by(Barangay, Fishing_locally) %>% 
+  count() %>% 
+  ggplot(., aes(x = Barangay, y = n, fill = Fishing_locally)) +
+  geom_bar(stat = "identity", position = "fill", alpha = .9) +
+  labs(x = "", y ="% of fishers", fill = "Fishing locally") +
+  scale_fill_fish_d(option = "Ostracion_whitleyi") +
+  theme_minimal()
+
+## CPUE
+
+# Dataset
+df_hook <- df_sessions %>%
+  filter(Habitat_1 %in% c("Batas", "Depla", "Mabini", "Sandoval", "Silanga"),
+         Gear == "Hook and line",
+         Habitat_type %in% c("Coral reef", "Soft bottom"),
+         !is.na(Time_fish),
+         !is.na(Capture_kg)) %>% 
+  mutate(CPUE = Capture_kg/Time_fish)
+
+# Boxplot CPUE per village
+plot_cpue_village <- df_hook %>%
+  ggplot(., aes(x = Habitat_1, y = CPUE, fill = Habitat_1)) +
+  geom_flat_violin(position = position_nudge(x = 0.2, y = 0), show.legend = FALSE, alpha=.8) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, show.legend = FALSE, alpha=.8) +
+  geom_point(position = position_jitter(width = 0.15), size = 1, alpha=0.2, show.legend = FALSE) +
+  labs(x = "", y = "CPUE (kg/h)", fill = "Fished habitat") +
+  scale_fill_fish_d(option = "Balistapus_undulatus") +
+  theme_perso()
+summary(aov(CPUE ~ Habitat_1, data = df_hook))
+TukeyHSD(aov(CPUE ~ Habitat_1, data = df_hook))
+pairwise.t.test(df_hook$CPUE, df_hook$Habitat_1, p.adj="none")
+
+# CPUE in time
+ggplot(data = df_hook, aes(x = Date, y = CPUE)) +
+  geom_point() +
+  geom_smooth() +
+  theme_minimal()
+
+# CPUE in time (per village)
+ggplot(data = df_hook, aes(x = Date, y = CPUE, col = Habitat_1)) +
+  geom_point() +
+  labs(x = "", y = "CPUE (kg/h)", col = "Village fished") +
+  geom_smooth(method = "lm") +
+  scale_color_fish_d(option = "Coris_gaimard") +
+  theme_minimal()
+
+# CPUE per fishing gear
+df_sessions <- df_sessions %>% 
+  filter(!is.na(Capture_kg), !is.na(Time_fish)) %>% 
+  mutate(CPUE = Capture_kg/Time_fish)
+ggplot(data = filter(df_sessions, Gear %in% c("Gillnet", "Speargun", "Hook and line", "Fish corral"), CPUE<10, Habitat_type == "Coral reef"), aes(x = Date, y = CPUE, col = Gear)) +
+  geom_point(alpha = .5) +
+  labs(x = "", y = "CPUE (kg/h)", col = "Gear") +
+  geom_smooth(method = "lm", alpha =.5) +
+  scale_color_fish_d(option = "Coris_gaimard") +
+  theme_ipsum()
+
+# CPUE per habitat
+df_sessions %>% 
+  filter(!is.na(Capture_kg), !is.na(Time_fish), Gear %in% c("Hook and line"), Habitat_type %in%c("Soft bottom", "Coral reef")) %>% 
+  mutate(CPUE = Capture_kg/Time_fish) %>% 
+  ggplot(aes(x = Date, y = CPUE, col = Habitat_type)) +
+  geom_point() +
+  labs(x = "", y = "CPUE (kg/h)", col = "Habitat fished") +
+  geom_smooth(method = "lm") +
+  scale_color_fish_d(option = "Coris_gaimard") +
+  theme_ipsum()
+
+# CPUE in time and average time fishing
+plot_cpue_time <- df_hook %>% 
+  ggplot(aes(x = Date)) +
+  geom_point(aes(y = CPUE), col = "#69b3a2", alpha = .2) +
+  geom_point(aes(y = Time_fish/3), col = "Grey", alpha = .2) +
+  scale_y_continuous(name = "CPUE (kg/h)", sec.axis = sec_axis(trans=~.*3, name="Time fishing(hour)")) +
+  geom_smooth(aes(y = CPUE), method = "lm", col = "#69b3a2") +
+  geom_smooth(aes(y = Time_fish/3), method = "lm", col = "Grey") +
+  labs(x = "") +
+  theme_perso()
+
+# Arrange plot
+plot_cpue_global <- ggarrange(plot_cpue_village, plot_cpue_time, nrow=2, labels = c("A", "B"))
+plot_cpue_global
+ggsave("./../Output/Plot_CPUE_global.png", height = 5, width = 3, dpi = 300)
+
+```
+
+# 5. Estimation of fish productivity
+
+```{r}
+### ESTIMATING WITH CENSUS OF FISHERS
+
+# Estimating mean CPUE per gear and per village
+df_prod <- df_sessions %>%
+  filter(!Gear == "Blast") %>% 
+  group_by(Gear) %>% 
+  summarize(Gear_CPUE = mean(Catch_day, na.rm=T), .groups = "drop")
+
+# Calculating total gear effort and productivity per village
+df_prod <- df_fishers %>% 
+  mutate(Fishing_days = case_when(is.na(Gear_2) ~ Fishing_days,
+                                  !is.na(Gear_2) & is.na(Gear_3) ~ Fishing_days/2,
+                                  !is.na(Gear_3) ~ Fishing_days/3)) %>%  # Dividing fishing efforts for fishers with several gears
+  pivot_longer(cols = c(Gear_1, Gear_2, Gear_3), names_to = "Gear_no", values_to = "Gear") %>% 
+  filter(!is.na(Gear)) %>% 
+  group_by(Barangay, Gear) %>%
+  summarize(Effort = sum(Fishing_days)/2, .groups = 'drop') %>% # Divided by two for the average between two years
+  left_join(df_prod, by = c("Gear")) %>% 
+  mutate(Productivity_gear = Effort*Gear_CPUE*52.143) %>%  # Productivity per gear per year
+  group_by(Barangay) %>% 
+  summarize(Productivity = sum(Productivity_gear, na.rm=T)/1000, .groups = 'drop')
+
+# Adding population per barangay (2020 PSA census of population and housing)
+df_prod$Population <- c(1220, 1274, 1698, 1355, 1587)
+
+# Average fish consumption per village
+df_prod$Fish_consumption <- tapply(df_hous$Fish_quantity_average, df_hous$Barangay, mean)
+df_prod$Consumption_total <- (df_prod$Population*df_prod$Fish_consumption)/1000
+df_prod$Balance <- round(df_prod$Productivity-df_prod$Consumption_total, 1)
+
+### ESTIMATING WITH HOUSEHOLD SURVEYS
+
+# % of household fishers
+df_prod_2 <- df_hous %>% 
+  group_by(Barangay, Fisher) %>% 
+  summarise(cnt = n()) %>% 
+  mutate(Percent_fisher = round(cnt / sum(cnt), 3)) %>% 
+  ungroup() %>% 
+  filter(Fisher == "Yes") %>% 
+  select(Barangay, Percent_fisher)
+
+# CPUE per village for hook and line and gillnet
+df_prod_2 <- df_sessions %>%
+  filter(Habitat_1 %in% c("Batas", "Depla", "Mabini", "Sandoval", "Silanga"),
+         Gear %in% c("Hook and line", "Gillnet"),
+         Habitat_type %in% c("Coral reef", "Soft bottom"),
+         !is.na(Capture_kg)) %>% 
+  group_by(Place_landing, Gear) %>% 
+  summarise(Catch = mean(Capture_kg/Days_fishing), .groups = "drop") %>% 
+  group_by(Place_landing) %>%
+  rename("Barangay" = "Place_landing") %>% 
+  summarise(Mean_daily_catch = mean(Catch), .groups = "drop") %>% 
+  right_join(df_prod_2, by = "Barangay")
+
+# Adding households
+df_prod_2$N_households <- c(305, 286, 433, 318, 260)
+
+# Average fishing days per village
+df_prod_2 <- df_fishers %>% 
+  group_by(Barangay) %>% 
+  summarise(Fishing_days = mean(Fishing_days)) %>% 
+  right_join(df_prod_2, by = "Barangay")
+
+# Computing productivity
+df_prod_2$Productivity <- ((df_prod_2$Mean_daily_catch*df_prod_2$Percent_fisher*df_prod_2$N_households)*(df_prod_2$Fishing_days/7)*365)/1000
+
+# Adding population per barangay (2020 PSA census of population and housing)
+df_prod_2$Population <- c(1220, 1274, 1698, 1355, 1587)
+
+# Average fish consumption per village
+df_prod_2$Fish_consumption <- tapply(df_hous$Fish_quantity_average, df_hous$Barangay, mean)
+df_prod_2$Consumption_total <- (df_prod_2$Population*df_prod_2$Fish_consumption)/1000
+df_prod_2$Balance <- round(df_prod_2$Productivity-df_prod_2$Consumption_total, 1)
+df_prod_2$Export <- df_prod_2$Balance/df_prod_2$Productivity
+
+# % of catch sold
+sum(df_prod$Balance)/sum(df_prod$Productivity)*100 # 39%
+sum(df_prod_2$Balance)/sum(df_prod_2$Productivity)*100 # 82% 
+
+```
+
+# 6. Analyzes on the origin of fish consumed
+
+```{r}
+# Origin of fish consumed for each Barangay (categories)
+plot_origin_cons <- df_cons %>% 
+  mutate(Food_origin = fct_rev(as.factor(Food_origin))) %>% 
+  filter(Food_type %in% c("Fish", "Dry fish")) %>%
+  group_by(Barangay) %>% 
+  count(Food_origin, name = "N") %>% 
+  ungroup() %>% 
+  filter(!is.na(Food_origin)) %>% 
+  ggplot(., aes(x = Barangay, y = N, fill = as.factor(Food_origin))) +
+  geom_bar(stat = "identity", position = "fill") +
+  labs(title = "Origin of fish consumed", x = "", y = "Number of meals", fill ="Food origin") +
+  scale_fill_fish_d(option = "Ostracion_whitleyi", labels=c('Bought outside the village', 'Bought to middleman', 'Bought to fisher', 'Gift',  'Own catch')) +
+  theme(legend.justification = "left") +
+  theme_perso()
+plot_origin_cons
+  
+# Origin of fish consumed for each Barangay (mean origin)
+df_cons %>% 
+  filter(Food_type %in% c("Fish", "Dry fish"),
+         !is.na(Food_origin)) %>%
+  group_by(Season, Barangay) %>% 
+  summarise(Food_origin_SE = sd(Food_origin)/sqrt(n()),
+            Food_origin = mean(Food_origin), .groups = "drop") %>% 
+  ggplot(., aes(x = Barangay, y = Food_origin, fill = Season)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin = Food_origin-Food_origin_SE, ymax = Food_origin+Food_origin_SE),
+                width = .2, position = position_dodge(.9)) +
+  labs(x = "", y ="Fish origin") +
+  scale_fill_fish_d(option = "Coris_gaimard") +
+  theme_perso()
+
+# Destination of fish per barangay per year
+df_fishers %>% 
+  group_by(Year, Barangay) %>% 
+  count(Dest_t, name = "N") %>% 
+  ungroup() %>% 
+  filter(!is.na(Dest_t)) %>% 
+  ggplot(., aes(x = Barangay, y = N, fill = Dest_t)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(vars(Year)) +
+  labs(x = "", y = "", fill ="Destination of catch") +
+  scale_fill_fish_d(option = "Centropyge_loricula") +
+  theme_perso()
+
+# Destination of fish per barangay
+plot_fish_export <- df_fishers %>% 
+  mutate(Dest_t = factor(Dest_t, levels = c("Export", "Market", "Middleman", "Village", "Subsistence"))) %>% 
+  group_by(Barangay) %>% 
+  count(Dest_t, name = "N") %>% 
+  ungroup() %>% 
+  filter(!is.na(Dest_t)) %>% 
+  ggplot(., aes(x = Barangay, y = N, fill = Dest_t)) +
+  geom_bar(stat = "identity", position = "fill") +
+  labs(title = "Destination of catch", x = "", y = "Number of fishers", fill ="Destination of catch per fisher") +
+  scale_fill_fish_d(option = "Ostracion_whitleyi") +
+  theme(legend.justification = "left") +
+  theme_perso()
+plot_fish_export
+
+# Export over production
+plot_fish_export_production <- df_prod_2 %>%
+  mutate(Export = Productivity - Consumption_total) %>% 
+  select(Barangay, Consumption_total, Export) %>% 
+  rename("Local consumption" = "Consumption_total") %>% 
+  pivot_longer(cols = c("Local consumption", "Export")) %>% 
+  ggplot(., aes(x = Barangay, y = value, fill = name)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Consumption and export of fish", x = "", y = "Fish (tons/year)", fill ="Destination") +
+  scale_fill_fish_d(option = "Ostracion_whitleyi") +
+  theme(legend.justification = "left") +
+  theme_perso()
+plot_fish_export_production
+
+# Arrange plot origin consumption and destination of export
+plot_export <- ggarrange(plot_origin_cons, plot_fish_export, plot_fish_export_production, nrow = 3, labels = c("A", "B", "C"), align = "hv")
+plot_export
+ggsave("./../Output/Plot_export.png", height = 7, width = 5.5, dpi = 400)
+
+# Table destination of fish per Barangay
+df_fishers %>% 
+  filter(!is.na(Dest_t)) %>% 
+  group_by(Barangay, Dest_t) %>% 
+  summarise(N = n()) %>% 
+  mutate(Per = 100*N/sum(N))
+
+# Table destination of fish
+df_fishers %>% 
+  filter(!is.na(Dest_t)) %>% 
+  group_by(Dest_t) %>% 
+  summarise(N = n()) %>% 
+  mutate(Per = 100*N/sum(N))
+  
+```
+# 7. Analyzes on price
+
+Price of fish is significantly different between surveys, villages and seasons. Expenditure on food is lower for fishers, farmers
+
+```{r}
+# Price of fish per Survey
+df_cons %>% 
+  filter(Food_type == "Fish", !is.na(Food_value)) %>%
+  group_by(Survey_no, Barangay) %>% 
+  summarise(Price_fish_SE = sd(Food_value)/sqrt(n()),
+            Price_fish = mean(Food_value), .groups = "drop") %>% 
+  ggplot(., aes(x = Barangay, y = Price_fish, fill = as.factor(Survey_no))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin = Price_fish-Price_fish_SE, ymax = Price_fish+Price_fish_SE),
+                width = .2, position = position_dodge(.9)) +
+  labs(x = "", y ="Fish price (PhP)", fill = "Survey") +
+  scale_fill_fish_d(option = "Coris_gaimard", labels = c("2019", "2022")) +
+  theme_minimal()
+summary(glm(Food_value ~ Barangay + as.factor(Survey_no) + Season, data = filter(df_cons, Food_type == "Fish", !is.na(Food_value))))
+
+# Price of fish per season
+df_cons %>% 
+  filter(Food_type == "Fish", !is.na(Food_value)) %>%
+  group_by(Season, Barangay) %>% 
+  summarise(Price_fish_SE = sd(Food_value)/sqrt(n()),
+            Price_fish = mean(Food_value), .groups = "drop") %>% 
+  ggplot(., aes(x = Barangay, y = Price_fish, fill = Season)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin = Price_fish-Price_fish_SE, ymax = Price_fish+Price_fish_SE),
+                width = .2, position = position_dodge(.9)) +
+  labs(x = "", y ="Fish price (PhP)") +
+  scale_fill_fish_d(option = "Coris_gaimard") +
+  theme_minimal()
+
+```
+# 10. Do people lack fish?
+
+```{r}
+# Number of people that said they were often lacking fish to eat
+table(df_hous$Lack_fish) # 37 No, 61 Yes
+
+# What factors can affect that
+chisq.test(table(df_hous$Lack_fish, df_hous$Barangay)) # p = 0.59 for barangay
+chisq.test(table(df_hous$Lack_fish, df_hous$Livelihood)) # p = 0.16 for livelihood or just fisher variable
+summary(aov(Fish_quantity_average ~ Lack_fish, data = df_hous)) # p = 0.16 for fish consumption
+
+# Lackinf fish per village
+df_hous %>% 
+  filter(!is.na(Lack_fish)) %>% 
+  group_by(Barangay, Lack_fish) %>% 
+  count(Lack_fish, name = "N") %>% 
+  ungroup() %>% 
+  ggplot(., aes(x = Barangay, y = N, fill = Lack_fish)) +
+  geom_bar(stat = "identity", position = "fill", alpha = .9) +
+  scale_fill_fish_d(option = "Chaetodon_ephippium") +
+  labs(x = "", y = "", fill = "Do you regularly lack fish to eat?") +
+  theme_minimal()
+
+df_hous %>% 
+  pivot_longer(cols = c(Lack_fish_reason1, Lack_fish_reason2), names_to = "No_reason", values_to = "Reason") %>%
+  filter(!is.na(Reason)) %>% 
+  group_by(Reason) %>% 
+  summarize(N = n(), .groups = "drop") %>% 
+  ggplot(aes(x = fct_reorder(Reason, N), y = N)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(x = "", y = "Number of respondents") +
+  theme_minimal()
+
+```
+
+# 11. Analyses landings
+
+```{r}
+# All species
+df_landings %>% 
+  filter(!is.na(Count), !is.na(Weight),
+         Habitat_1 %in% c("Batas","Depla","Mabini","Sandoval","Silanga")) %>% 
+  mutate(Weight_ind = Weight/Count) %>%  # Calculate weight of individual fish
+  relocate(Weight_ind, .after = Weight) %>% 
+  uncount(Count) %>% 
+  ggplot(aes(x = Habitat_1, y = Weight_ind)) +
+  geom_boxplot() +
+  theme_minimal()
+
+# Mean weight of fish per barangay
+df_landings %>% 
+  filter(!is.na(Count), !is.na(Weight),
+         Habitat_1 %in% c("Batas","Depla","Mabini","Sandoval","Silanga")) %>% 
+  mutate(Weight_ind = Weight/Count) %>%  # Calculate weight of individual fish
+  relocate(Weight_ind, .after = Weight) %>% 
+  uncount(Count) %>% 
+  group_by(Habitat_1) %>% 
+  summarise(Mean_weight = mean(Weight_ind))
+
+# ANOVA
+df_landings %>% 
+  filter(!is.na(Count), !is.na(Weight),
+         Habitat_1 %in% c("Batas","Depla","Mabini","Sandoval","Silanga")) %>% 
+  mutate(Weight_ind = Weight/Count) %>%  # Calculate weight of individual fish
+  relocate(Weight_ind, .after = Weight) %>% 
+  uncount(Count) %>% 
+  anova_test(Weight_ind ~ Habitat_1)
+
+# Most common species
+df_landings %>% 
+  filter(!is.na(Count), !is.na(Weight),
+         Habitat_1 %in% c("Batas","Depla","Mabini","Sandoval","Silanga"),
+         Species_name %in% c("Lutjanus_carponotatus", "Lethrinus_erythropterus", "Lethrinus_lentjan",
+                             "Cephalopholis_cyanostigma", "Choerodon_anchorago", "Scolopsis_margaritifera",
+                             "Plectropomus_maculatus")) %>% 
+  mutate(Weight_ind = Weight/Count) %>%  # Calculate weight of individual fish
+  relocate(Weight_ind, .after = Weight) %>% 
+  uncount(Count) %>% 
+  ggplot(aes(x = Habitat_1, y = Weight_ind, col = Species_name)) +
+  geom_boxplot() +
+  theme_minimal()
+
+```
+
+# XXX. MPA Management plan
+
+```{r}
+# 1. Main livelihoods per Barangay
+df_hous %>%
+  filter(Survey_no == 2, Barangay %in% c("Depla", "Sandoval", "Silanga")) %>% 
+  select(Barangay, Job_1_M, Job_2_M, Job_1_F, Job_2_F) %>%
+  pivot_longer(c(Job_1_M, Job_2_M, Job_1_F, Job_2_F), names_to = "Job_number", values_to = "Livelihood") %>%
+  filter(!is.na(Livelihood)) %>%
+  group_by(Barangay) %>%
+  count(Livelihood, name = "N") %>%
+  ungroup() %>% 
+  ggplot(., aes(x = Barangay, y = N, fill = Livelihood)) +
+  geom_bar(stat = "identity", position = "fill", alpha = .9) +
+  labs(x = "", y ="") +
+  scale_fill_fish_d(option = "Acanthurus_olivaceus") +
+  theme_minimal()
+
+# 2. Boxplot fish consumption per village
+df_hous %>% 
+  filter(Survey_no == 2, Barangay %in% c("Depla", "Sandoval", "Silanga")) %>%
+  ggplot(., aes(x = Barangay, y = Fish_quantity_average, fill = Barangay)) +
+  geom_boxplot(alpha = .6) +
+  geom_jitter(alpha = .3, width = .2) +
+  labs(x = "", y = "Fish consumption (kg/capita/year)", fill = "Village") +
+  scale_fill_fish_d(option = "Balistapus_undulatus") +
+  theme_minimal()
+
+# 3. Lacking fish per village
+df_hous %>% 
+  filter(Survey_no == 2, Barangay %in% c("Depla", "Sandoval", "Silanga"), !is.na(Lack_fish)) %>% 
+  group_by(Barangay, Lack_fish) %>% 
+  count(Lack_fish, name = "N") %>% 
+  ungroup() %>% 
+  ggplot(., aes(x = Barangay, y = N, fill = Lack_fish)) +
+  geom_bar(stat = "identity", position = "fill", alpha = .9) +
+  scale_fill_fish_d(option = "Chaetodon_ephippium") +
+  labs(x = "", y = "", fill = "Do you regularly lack fish to eat?") +
+  theme_minimal()
+
+# 4. Lack fish reasons
+df_hous %>% 
+  pivot_longer(cols = c(Lack_fish_reason1, Lack_fish_reason2), names_to = "No_reason", values_to = "Reason") %>%
+  filter(!is.na(Reason)) %>% 
+  group_by(Reason) %>% 
+  summarize(N = n(), .groups = "drop") %>% 
+  ggplot(aes(x = fct_reorder(Reason, N), y = N)) +
+  geom_bar(stat = "identity", alpha = .9) +
+  coord_flip() +
+  labs(x = "", y = "Number of respondents") +
+  theme_minimal()
+
+
+# 5. Gears used (census)
+df_fishers %>%
+  filter(Barangay %in% c("Depla","Sandoval", "Silanga"), Year == "2022") %>% 
+  select(Barangay, Gear_1, Gear_2, Gear_3) %>%
+  pivot_longer(c(Gear_1, Gear_2, Gear_3), names_to = "Gear_number", values_to = "Gear") %>%
+  filter(!is.na(Gear)) %>%
+  group_by(Barangay) %>%
+  count(Gear, name = "N") %>%
+  ungroup() %>% 
+  filter(Gear != "Blast", Gear != "Cyanide") %>% 
+  ggplot(., aes(x = Barangay, y = N, fill = Gear)) +
+  geom_bar(stat = "identity", alpha = .9) +
+  labs(x = "", y ="Number of gears") +
+  scale_fill_fish_d(option = "Coris_gaimard") +
+  theme_minimal()
+
+# 6. CPUE in time (per village)
+df_hook %>% 
+  filter(Habitat_1 %in% c("Depla","Sandoval", "Silanga")) %>% 
+  ggplot(., aes(x = Date, y = CPUE, col = Habitat_1)) +
+  geom_point() +
+  labs(x = "", y = "CPUE (kg/h)", col = "Village fished") +
+  geom_smooth(method = "lm") +
+  scale_color_fish_d(option = "Balistapus_undulatus") +
+  theme_minimal()
+
+# 7. Habitats fished
+df_fishers %>%
+  filter(Barangay %in% c("Depla","Sandoval", "Silanga"), Year == "2022") %>% 
+  select(Barangay, Hab_1, Hab_2) %>%
+  pivot_longer(c(Hab_1, Hab_2), names_to = "Habitat_number", values_to = "Habitat") %>%
+  filter(!is.na(Habitat)) %>%
+  group_by(Barangay) %>%
+  count(Habitat, name = "N") %>%
+  ungroup() %>% 
+  ggplot(., aes(x = Barangay, y = N, fill = Habitat)) +
+  geom_bar(stat = "identity", position = "fill", alpha = .9) +
+  labs(x = "", y ="Number of fishers", fill = "Habitat fished") +
+  scale_fill_fish_d(option = "Epinephelus_marginatus") +
+  theme_minimal()
+
+# 8. Price of fish per Barangay
+df_cons %>% 
+  filter(Food_type == "Fish", !is.na(Food_value),
+         Barangay %in% c("Depla", "Sandoval", "Silanga")) %>%
+  group_by(Survey_no, Barangay) %>% 
+  summarise(Price_fish_SE = sd(Food_value)/sqrt(n()),
+            Price_fish = mean(Food_value), .groups = "drop") %>% 
+  ggplot(., aes(x = Barangay, y = Price_fish, fill = as.factor(Survey_no))) +
+  geom_bar(stat = "identity", position = "dodge", alpha = .9) +
+  geom_errorbar(aes(ymin = Price_fish-Price_fish_SE, ymax = Price_fish+Price_fish_SE),
+                width = .2, position = position_dodge(.9)) +
+  labs(x = "", y ="Fish price (PhP/kg) ± SE", fill = "Year") +
+  scale_fill_fish_d(option = "Cephalopholis_argus", labels = c("2019", "2022")) +
+  theme_minimal()
+summary(glm(Food_value ~ Barangay + as.factor(Survey_no) + Season, data = filter(df_cons, Food_type == "Fish", !is.na(Food_value))))
+
+```
+
+# Export data tables
+
+```{r}
+df_prod_clean <- df_prod_2 %>% 
+  mutate(Percent_fisher = Percent_fisher*100) %>% 
+  select(-Export) %>% 
+  rename("Village" = "Barangay",
+         "Average fishing days per week" = "Fishing_days",
+         "Average catch (kg/day)" = "Mean_daily_catch",
+         "Percentage of fishing households" = "Percent_fisher",
+         "Number of households" = "N_households",
+         "Total production (tons/year)" = "Productivity",
+         "Per capita consumption (kg/year)" = "Fish_consumption", 
+         "Total consumption (tons/year)" = "Consumption_total",
+         "Balance (tons/year)" = "Balance") %>% 
+  mutate(across(2:10, round, 1))
+  
+write.csv(df_prod_clean, "./../Output/Productivity_table.csv", row.names = F)
+
+```
+
