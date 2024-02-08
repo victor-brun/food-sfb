@@ -1,0 +1,955 @@
+---
+title: "2_Nutrition"
+author: "Victor Brun"
+date: "2023-05-23"
+output: html_document
+---
+
+# 1. Data and packages
+
+```{r message=FALSE, warning=FALSE}
+rm(list=ls())
+
+library(readxl)
+library(tidyverse)
+library(ggplot2)
+library(ggridges)
+library(PupillometryR)
+library(fishualize)
+library(sjPlot)
+library(ggpubr)
+library(corrplot)
+
+## Loading data
+
+df_cons <- read_xlsx("./../Data/Consumption_SFB.xlsx", sheet = 1) # Consumption data
+df_hous <- read_xlsx("./../Data/Consumption_SFB.xlsx", sheet = 2) # Metadata on households for consumption data
+df_nutrition <- read_xlsx("./../Data/Nutritional_database.xlsx") # Nutritional data on food products
+df_fishers <- read_xlsx("./../Data/Fisherfolks.xlsx", sheet = 1) %>%  # Census of active fishers
+  mutate(Dest_t = ifelse(Dest_t %in% c("Direct export", "Market","Middleman"), "Export", Dest_t))
+df_sessions <- read_xlsx("./../Data/Fishing_sessions.xlsx", sheet = 2) # Data on fishing sessions
+
+# Left join to add metadata to consumption data
+df_cons <- df_cons %>% 
+  dplyr::select(-ID_survey) %>% 
+  left_join(df_hous, by = "Questionnaire") 
+
+# Custom theme for graphs
+theme_perso <- function(){
+  theme_bw() +
+    theme(text = element_text(family = "Helvetica Light"),
+          axis.line.x = element_line(color="black"), 
+          axis.line.y = element_line(color="black"),
+          panel.border = element_blank(),
+          panel.grid.major.x = element_blank(),                                          
+          panel.grid.minor.x = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          panel.grid.major.y = element_blank(),  
+          plot.margin = unit(c(0.1, 0.1, 0.1, 0.1), units = , "cm"),
+          legend.key = element_blank(),
+          legend.background = element_rect(color = "black", 
+                                           fill = "transparent", 
+                                           size = 2, linetype = "blank"))
+}
+
+```
+
+# 2. Data format
+
+```{r}
+## Set Food_name for unset products
+df_cons <- df_cons %>% 
+  mutate(Food_name = ifelse(Food_type == "Rice", "Rice", Food_name),
+         Food_name = ifelse(Food_type == "Bread", "Bread", Food_name),
+         Food_name = ifelse(Food_type == "Eggs", "Eggs", Food_name),
+         Food_name = ifelse(Food_type == "Noodles", "Noodles", Food_name),
+         Food_name = ifelse(is.na(Food_type), "Nothing", Food_name))
+
+## Data format
+df_cons$Food_name <- as.factor(df_cons$Food_name)
+df_cons$Food_quantity <- as.numeric(df_cons$Food_quantity)
+df_cons$Food_pieces <- as.numeric(df_cons$Food_pieces)
+df_cons <- df_cons %>% mutate(Food_type = ifelse(Food_type == "Shells", "Other seafood", Food_type))
+
+## Computing new variables
+
+# Size of household
+df_hous$N_household <- df_hous$N_adults_hh+df_hous$N_children_hh
+
+# Livelihood of household: fisher, farmer, fisher & farmer,  other livelihood
+df_hous <- df_hous %>%
+  mutate(Fisher = case_when(if_any(starts_with("Job"), ~ .x == "Fishing") ~ "Yes"),
+         Farmer = case_when(if_any(starts_with("Job"), ~ .x == "Farming") ~ "Yes"),
+         Fisher_farmer = case_when(if_all(c(Fisher, Farmer), ~ .x == "Yes") ~ "Yes"),
+         No_livelihood = case_when(is.na(Job_1_M) & is.na(Job_1_F) & is.na(Job_2_M) & is.na(Job_2_F) ~ "Yes"),
+         Other_livelihood = case_when(if_all(c(Fisher, Farmer, Fisher_farmer), ~ is.na(.x)) ~ "Yes"),
+         Livelihood_x = case_when(Fisher == "Yes" ~ "Fishing",
+                                Farmer == "Yes" ~ "Farming",
+                                No_livelihood == "Yes" ~ "No livelihood",
+                                Other_livelihood == "Yes" ~ "Other livelihood"),
+         Livelihood = case_when(Fisher_farmer == "Yes" ~ "Fishing & farming", TRUE ~ Livelihood_x),
+         Livelihood = as.factor(Livelihood)) %>% 
+  dplyr::select(-Fisher, -Farmer, -Fisher_farmer, -Other_livelihood, -Livelihood_x)
+
+# Fisher Yes or No
+df_hous <- df_hous %>% 
+  mutate(Fisher = case_when(if_any(starts_with("Job"), ~ .x == "Fishing") ~ "Yes",
+                            TRUE ~ "No"))
+
+# Year of survey
+df_hous <- df_hous %>% 
+  mutate(Year = ifelse(Survey_no == 1, 2019, 2022))
+
+# Data format for catch
+df_sessions$Capture_kg <- as.numeric(df_sessions$Capture_kg)
+df_sessions$Time_fish <- as.numeric(df_sessions$Time_fish)
+```
+
+# 3. Descriptive statistics
+
+2 consumption surveys were conducted in 2019 and 2022 during which 340 households were interviewed
+
+```{r}
+# Household surveys
+nrow(subset(df_hous, grepl("A", Questionnaire, ignore.case = T))) # 239 questionnaires in 2019
+nrow(subset(df_hous, grepl("B", Questionnaire, ignore.case = T))) #101 questionnaires in 2022
+summary(df_hous$Season) # 266 Amihan (dry season) & 72 Habagat (wet season)
+summary(df_hous$Barangay) # 66 Batas, 71 Depla, 68 Mabini, 66 Sandoval, 67 Silanga
+summary(df_hous$Age) 
+sd(df_hous$Age, na.rm=T) # 16 to 89 years old, mean 41.35 (SD = 13.77)
+summary(df_hous$Gender) # 276 F, 61 M, 1 NA
+mean(df_hous$N_adults_hh + df_hous$N_children_hh) 
+sd(df_hous$N_adults_hh + df_hous$N_children_hh) # 4.7 persons on average in each household (SD = 1.91)
+
+# Consumption
+nrow(df_cons) # 5590 food items surveyed
+df_cons %>% group_by(Questionnaire, Day, Meal) %>% summarise(total_count=n(), .groups = 'drop') %>% nrow() # 2762 meals surveyed
+
+# Livelihood per barangay and per household
+df_hous %>% 
+  group_by(Barangay, Livelihood) %>% 
+  summarise(cnt = n()) %>% 
+  mutate(per = cnt/sum(cnt)) # Per barangay
+df_hous %>% 
+  group_by(Livelihood) %>% 
+  summarise(cnt = n()) %>% 
+  mutate(per = cnt/sum(cnt)) # Global => 33% are only relying on fishing
+
+# Fishers and non fishers per barangay and across barangay
+df_fishing_hh <- df_hous %>% 
+  group_by(Barangay, Fisher) %>% 
+  summarise(cnt = n(), .groups = "drop") %>% 
+  group_by(Barangay) %>% 
+  mutate(per = cnt/sum(cnt)) # Per barangay
+df_hous %>% 
+  group_by(Fisher) %>% 
+  summarise(cnt = n(), .groups = "drop") %>% 
+  mutate(per = cnt/sum(cnt)) # All barangays
+df_hous %>% 
+  group_by(Fisher) %>% 
+  summarise(cnt = n(), .groups = "drop") %>% 
+  mutate(per = cnt/sum(cnt)) # All barangays
+
+# Plot percent of fishers per year per village
+df_fishing_hh %>% 
+  filter(Fisher == "Yes") %>% 
+  ggplot(., aes(x = Barangay, y = per)) + 
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(y = "Percentage of fishing households") +
+  theme_perso()
+```
+
+
+# 4. Computing nutrient composition of food and per capita intakes
+
+```{r}
+### 1. Adding quantities and prices for NAs
+
+## Adding quantities to food products where quantity is missing based on estimate of weight per piece
+df_cons <- df_cons %>% 
+  mutate(Food_quantity = case_when(is.na(Food_quantity)&Food_name == "Noodles" ~ Food_pieces*0.06,
+                                   is.na(Food_quantity)&Food_name == "Fish cans" ~ Food_pieces*0.155,
+                                   is.na(Food_quantity)&Food_name == "Fish can (tuna)" ~ Food_pieces*0.175,
+                                   is.na(Food_quantity)&Food_name == "Fresca tuna" ~ Food_pieces*0.175,
+                                   is.na(Food_quantity)&Food_name == "Sardinas" ~ Food_pieces*0.155,
+                                   is.na(Food_quantity)&Food_name == "Corned beef" ~ Food_pieces*0.150,
+                                   is.na(Food_quantity)&Food_name == "Bread" ~ Food_pieces*0.05,
+                                   is.na(Food_quantity)&Food_name == "Eggs" ~ Food_pieces*0.06,
+                                   is.na(Food_quantity)&Food_name == "Papaya" ~ Food_pieces*0.5,
+                                   is.na(Food_quantity)&Food_name == "Banana" ~ Food_pieces*0.05,
+                                   is.na(Food_quantity)&Food_type == "Fish" ~ Food_pieces*0.1,
+                                   TRUE ~ Food_quantity
+                                   ))
+
+## Adding price for NA products
+
+# Average price per product
+price_products <- df_cons %>%
+  group_by(Food_type, Survey_no) %>% 
+  summarise(Price_avg = mean(Food_value, na.rm=T))
+
+# Left join of product prices and computing expenditure
+df_cons <- df_cons %>% 
+  left_join(price_products, by = c("Food_type", "Survey_no")) %>% 
+  mutate(Price = ifelse(is.na(Food_value), Price_avg, Food_value), # If price is NA then we take the average value for the product type
+         Expenditure = ifelse(Food_type %in% c("Biscuit", "Bread", "Cake", "Cans", "Eggs", "Noodles", "Tins"), Price*Food_pieces,
+                              Price*Food_quantity))
+# Testing if any NAs left
+prices <- df_cons %>% 
+  dplyr::select(Questionnaire, Survey_no, Food_type, Food_value, Price_avg, Price, Expenditure)
+
+
+### 2. Computing per capita food expenditure
+
+# Computing value per food product
+df_cons <- df_cons %>% 
+  mutate(Price_product = case_when(Food_origin == 1 ~ 0,
+                                   is.na(Food_quantity) ~ Food_value*Food_pieces,
+                                   TRUE ~ Food_value*Food_quantity)) %>% 
+  relocate(Price_product, .after = Food_value)
+
+# Computing average price per meal per person
+df_hous <- df_cons %>% 
+  filter(!is.na(Expenditure), Meal != "Snack") %>% 
+  group_by(Questionnaire, Day, Meal) %>% 
+  summarise(Price_meal = sum(Expenditure), .groups = "drop") %>% 
+  group_by(Questionnaire) %>% 
+  summarise(Price_meal_average = mean(Price_meal), .groups = "drop") %>%
+  right_join(df_hous, by = "Questionnaire") %>% 
+  mutate(Price_meal_average = ((Price_meal_average/N_household)*3)) # Expressed in PhP/day
+
+
+### 3. Computing energy, protein and micronutrient intakes
+
+# Adding energy to fishes NA
+df_nutrition <- df_nutrition %>% 
+  mutate(Energy_kcal = 
+           case_when(is.na(Energy_kcal) & Seafood_habitat %in% c("Coral reef", "Small pelagic", "Large pelagic") ~ mean(df_nutrition[Seafood_habitat %in% c("Coral reef", "Small pelagic", "Large pelagic"),]$Energy_kcal, na.rm=T),
+                     TRUE ~ Energy_kcal))
+
+# Making dry fish 2x heavier to estimate original net weight and nutrient content
+df_cons <- df_cons %>% 
+  mutate(Food_quantity = case_when(Food_type == "Dry fish" ~ Food_quantity*3,
+                                   TRUE ~ Food_quantity))
+
+# Making fresh fish 33% lighter for fillet
+df_cons <- df_cons %>% 
+  mutate(Food_quantity = case_when(Food_type == "Fish" ~ Food_quantity*0.667,
+                                   TRUE ~ Food_quantity))
+
+# Computing nutrients for each food observation
+df_cons <- df_cons %>% 
+  left_join(df_nutrition, by = "Food_name") %>% 
+  mutate(Energy_kcal = Energy_kcal*10*Food_quantity, # Multiply by 10 because original data expressed /100g
+         Protein_g = Protein_g*10*Food_quantity,
+         Total_fat_g = Total_fat_g*10*Food_quantity,
+         Total_carb_g = Total_carb_g*10*Food_quantity,
+         Calcium_mg = Calcium_mg*10*Food_quantity,
+         Iron_mg = Iron_mg*10*Food_quantity,
+         Vitamin_A_µg = Vitamin_A_µg*10*Food_quantity,
+         Selenium_µg = Selenium_µg*10*Food_quantity,
+         Zinc_mg = Zinc_mg*10*Food_quantity,
+         Omega_3_g = Omega_3_g*10*Food_quantity
+         )
+
+# Computing number of meals surveyed per household
+df_hous <- df_cons %>%
+  filter(Meal != "Snack") %>%
+  group_by(Questionnaire, Day, Meal) %>% 
+  summarize(N_food_items= n(), .groups = 'drop') %>% 
+  group_by(Questionnaire) %>%
+  summarize(N_meals = n()) %>% 
+  right_join(df_hous, by = "Questionnaire")
+
+# Computing total household energy intake
+df_hous <- df_cons %>%
+  filter(Meal != "Snack") %>%
+  group_by(Questionnaire) %>% 
+  summarize(Energy_kcal = sum(Energy_kcal, na.rm=T), .groups = 'drop') %>% 
+  right_join(df_hous, by = "Questionnaire") %>% 
+  mutate(Energy_kcal = (Energy_kcal/N_meals)*3) # Multiply by 3 for daily estimate
+
+# Computing percentage of energy intake to requirement per household
+Children_er <- (650+1600)/2
+Adult_er <- (1540+2530)/2
+df_hous <- df_hous %>%
+  rowwise() %>% 
+  mutate(Energy_requirement = (N_adults_hh*Adult_er) + (N_children_hh*Children_er),
+         Energy_percent = (Energy_kcal/Energy_requirement)*100)
+
+# Computing per capita protein intake
+df_hous <- df_cons %>%
+  filter(Meal != "Snack") %>%
+  group_by(Questionnaire) %>% 
+  summarize(Protein_g = sum(Protein_g, na.rm=T), .groups = 'drop') %>% 
+  right_join(df_hous, by = "Questionnaire") %>% 
+  mutate(Protein_g = (Protein_g/N_meals)*3)
+
+# Computing percentage of protein intake to requirement per household
+Children_pr <- (8+30)/2
+Adult_pr <- (43+89)/2
+df_hous <- df_hous %>%
+  rowwise() %>% 
+  mutate(Protein_requirement = (N_adults_hh*Adult_pr) + (N_children_hh*Children_pr),
+         Protein_percent = (Protein_g/Protein_requirement)*100)
+
+# Computing per capita calcium intake
+df_hous <- df_cons %>%
+  filter(Meal != "Snack") %>%
+  group_by(Questionnaire) %>% 
+  summarize(Calcium_mg = sum(Calcium_mg, na.rm=T), .groups = 'drop') %>% 
+  right_join(df_hous, by = "Questionnaire") %>% 
+  mutate(Calcium_mg = (Calcium_mg/N_meals)*3)
+
+# Computing percentage of calcium to requirement per household
+Children_cr <- (200+700)/2
+Adult_cr <- (1000+750)/2
+df_hous <- df_hous %>%
+  rowwise() %>% 
+  mutate(Calcium_requirement = (N_adults_hh*Adult_cr) + (N_children_hh*Children_cr),
+         Calcium_percent = (Calcium_mg/Calcium_requirement)*100)
+
+# Computing per capita iron intake
+df_hous <- df_cons %>%
+  filter(Meal != "Snack") %>%
+  group_by(Questionnaire) %>% 
+  summarize(Iron_mg = sum(Iron_mg, na.rm=T), .groups = 'drop') %>% 
+  right_join(df_hous, by = "Questionnaire") %>% 
+  mutate(Iron_mg = (Iron_mg/N_meals)*3)
+
+# Computing percentage of iron to requirement per household
+Children_ir <- (8+10)/2
+Adult_ir <- (10+28)/2
+df_hous <- df_hous %>%
+  rowwise() %>% 
+  mutate(Iron_requirement = (N_adults_hh*Adult_ir) + (N_children_hh*Children_ir),
+         Iron_percent = (Iron_mg/Iron_requirement)*100)
+
+# Computing per capita Vitamin A intake
+df_hous <- df_cons %>%
+  filter(Meal != "Snack") %>%
+  group_by(Questionnaire) %>% 
+  summarize(Vitamin_A_µg = sum(Vitamin_A_µg, na.rm=T), .groups = 'drop') %>% 
+  right_join(df_hous, by = "Questionnaire") %>% 
+  mutate(Vitamin_A_µg = (Vitamin_A_µg/N_meals)*3)
+
+# Computing percentage of Vitamin A to requirement per household
+Children_vr <- (380+400)/2
+Adult_vr <- (500+700)/2
+df_hous <- df_hous %>%
+  rowwise() %>% 
+  mutate(Vitamin_A_requirement = (N_adults_hh*Adult_vr) + (N_children_hh*Children_vr),
+         Vitamin_A_percent = (Vitamin_A_µg/Vitamin_A_requirement)*100)
+
+# Computing per capita selenium intake
+df_hous <- df_cons %>%
+  filter(Meal != "Snack") %>%
+  group_by(Questionnaire) %>% 
+  summarize(Selenium_µg = sum(Selenium_µg, na.rm=T), .groups = 'drop') %>% 
+  right_join(df_hous, by = "Questionnaire") %>% 
+  mutate(Selenium_µg = (Selenium_µg/N_meals)*3)
+
+# Computing percentage of selenium to requirement per household
+Children_sr <- (6+20)/2
+Adult_sr <- (21+38)/2
+df_hous <- df_hous %>%
+  rowwise() %>% 
+  mutate(Selenium_requirement = (N_adults_hh*Adult_sr) + (N_children_hh*Children_sr),
+         Selenium_percent = (Selenium_µg/Selenium_requirement)*100)
+
+# Computing per capita zinc intake
+df_hous <- df_cons %>%
+  filter(Meal != "Snack") %>%
+  group_by(Questionnaire) %>% 
+  summarize(Zinc_mg = sum(Zinc_mg, na.rm=T), .groups = 'drop') %>% 
+  right_join(df_hous, by = "Questionnaire") %>% 
+  mutate(Zinc_mg = (Zinc_mg/N_meals)*3)
+
+# Computing percentage of zinc to requirement per household
+Children_zr <- (2+5.1)/2
+Adult_zr <- (4.6+9)/2
+df_hous <- df_hous %>%
+  rowwise() %>% 
+  mutate(Zinc_requirement = (N_adults_hh*Adult_zr) + (N_children_hh*Children_zr),
+         Zinc_percent = (Zinc_mg/Zinc_requirement)*100)
+
+# Computing overall nutrient intake
+nutrients <- df_hous %>% 
+  mutate(Calcium_percent = ifelse(Calcium_percent>100, 100, Calcium_percent),
+         Iron_percent = ifelse(Iron_percent>100, 100, Iron_percent),
+         Vitamin_A_percent = ifelse(Vitamin_A_percent>100, 100, Vitamin_A_percent),
+         Selenium_percent = ifelse(Selenium_percent>100, 100, Selenium_percent),
+         Zinc_percent = ifelse(Zinc_percent>100, 100, Zinc_percent)) %>% 
+  rowwise() %>% 
+  mutate(Nutrient_intake = sum(Calcium_percent, Iron_percent, Vitamin_A_percent, Selenium_percent, Zinc_percent))
+df_hous$Nutrient_intake = nutrients$Nutrient_intake
+rm(nutrients)
+
+# Capping energy and protein intake to 100%
+df_hous <- df_hous %>% 
+  mutate(Energy_percent = ifelse(Energy_percent>100, 100, Energy_percent),
+         Protein_percent = ifelse(Protein_percent>100, 100, Protein_percent))
+
+# Compute average per capita fish consumption (per meal)
+df_hous <- df_cons %>%
+  left_join(dplyr::select(df_hous, Questionnaire, N_meals), by = "Questionnaire") %>% 
+  mutate(Fish_quantity = ifelse(Food_type %in% c("Fish"), (Food_quantity*1.334)/(N_adults+N_children), 0), # Getting back to original weight of fish
+         Fish_quantity = ifelse(Food_type %in% c("Dry fish"), (Fish_quantity + (Food_quantity)/(N_adults+N_children)), Fish_quantity)) %>% # Adding the quantity of dry fish (has been multiplied by 2 earlier to estimate net wet weight)
+  group_by(Questionnaire, Day, Meal) %>% 
+  summarize(Fish_quantity_meal = sum(Fish_quantity), .groups = 'drop') %>% 
+  group_by(Questionnaire) %>% 
+  summarize(Fish_quantity_average = mean(Fish_quantity_meal, na.rm=T)*3*365.25) %>% # Average per week
+  right_join(df_hous, by = "Questionnaire")
+
+# Compute average per capita reef fish consumption
+df_hous <- df_cons %>%
+  left_join(dplyr::select(df_hous, Questionnaire, N_meals), by = "Questionnaire") %>% 
+  mutate(Reef_fish_quantity = case_when(Seafood_habitat == "Coral reef" ~ Food_quantity/(N_adults+N_children),
+                                        TRUE ~ 0)) %>% 
+  group_by(Questionnaire, Day, Meal) %>% 
+  summarize(Reef_fish_meal = sum(Reef_fish_quantity), .groups = 'drop') %>% 
+  group_by(Questionnaire) %>% 
+  summarize(Reef_fish_average = mean(Reef_fish_meal, na.rm=T)*3*365.25) %>% # Average per week
+  right_join(df_hous, by = "Questionnaire")
+
+# Compute average per capita small pelagic fish consumption
+df_hous <- df_cons %>%
+  left_join(dplyr::select(df_hous, Questionnaire, N_meals), by = "Questionnaire") %>% 
+  mutate(Small_pelagic_quantity = case_when(Seafood_habitat == "Small pelagic" ~ Food_quantity/(N_adults+N_children),
+                                        TRUE ~ 0)) %>% 
+  group_by(Questionnaire, Day, Meal) %>% 
+  summarize(Small_pelagic_meal = sum(Small_pelagic_quantity), .groups = 'drop') %>% 
+  group_by(Questionnaire) %>% 
+  summarize(Small_pelagic_average = mean(Small_pelagic_meal, na.rm=T)*3*365.25) %>% # Average per week
+  right_join(df_hous, by = "Questionnaire")
+
+# Compute average per capita large pelagic fish consumption
+df_hous <- df_cons %>%
+  left_join(dplyr::select(df_hous, Questionnaire, N_meals), by = "Questionnaire") %>% 
+  mutate(Large_pelagic_quantity = case_when(Seafood_habitat == "Large pelagic" ~ Food_quantity/(N_adults+N_children),
+                                        TRUE ~ 0)) %>% 
+  group_by(Questionnaire, Day, Meal) %>% 
+  summarize(Large_pelagic_meal = sum(Large_pelagic_quantity), .groups = 'drop') %>% 
+  group_by(Questionnaire) %>% 
+  summarize(Large_pelagic_average = mean(Large_pelagic_meal, na.rm=T)*3*365.25) %>% # Average per week
+  right_join(df_hous, by = "Questionnaire")
+
+# Compute total pelagic fish quantity
+df_hous <- df_hous %>% 
+  rowwise() %>% 
+  mutate(Pelagic_fish_average = Small_pelagic_average + Large_pelagic_average)
+
+# Compute average per capita vegetables consumption (per meal)
+df_hous <- df_cons %>%
+  left_join(dplyr::select(df_hous, Questionnaire, N_meals), by = "Questionnaire") %>% 
+  mutate(Veg_quantity = ifelse(Food_type == "Vegetables", Food_quantity/(N_adults+N_children), 0)) %>% 
+  group_by(Questionnaire, Day, Meal) %>% 
+  summarize(Veg_quantity_meal = sum(Veg_quantity), .groups = 'drop') %>% 
+  group_by(Questionnaire) %>% 
+  summarize(Veg_quantity_average = mean(Veg_quantity_meal, na.rm=T)*3*365.25) %>% # Average per week
+  right_join(df_hous, by = "Questionnaire")
+
+
+# Compute average per capita cans consumption
+df_hous <- df_cons %>%
+  left_join(dplyr::select(df_hous, Questionnaire, N_meals), by = "Questionnaire") %>% 
+  mutate(Cans_quantity = ifelse(Food_type == "Tins", Food_quantity/(N_adults+N_children), 0)) %>% 
+  group_by(Questionnaire, Day, Meal) %>% 
+  summarize(Cans_quantity_meal = sum(Cans_quantity), .groups = 'drop') %>% 
+  group_by(Questionnaire) %>% 
+  summarize(Cans_quantity_average = mean(Cans_quantity_meal, na.rm=T)*3*365.25) %>% # Average per week
+  right_join(df_hous, by = "Questionnaire")
+
+# Compute average per capita seafood consumption
+df_hous <- df_cons %>%
+  left_join(dplyr::select(df_hous, Questionnaire, N_meals), by = "Questionnaire") %>% 
+  mutate(Seafood_quantity = ifelse(Food_type == "Other seafood", Food_quantity/(N_adults+N_children), 0)) %>% 
+  group_by(Questionnaire, Day, Meal) %>% 
+  summarize(Seafood_quantity_meal = sum(Seafood_quantity), .groups = 'drop') %>% 
+  group_by(Questionnaire) %>% 
+  summarize(Seafood_quantity_average = mean(Seafood_quantity_meal, na.rm=T)*3*365.25) %>% # Average per year
+  right_join(df_hous, by = "Questionnaire")
+
+# Compute average per capita eggs consumption
+df_hous <- df_cons %>%
+  left_join(dplyr::select(df_hous, Questionnaire, N_meals), by = "Questionnaire") %>% 
+  mutate(Eggs_quantity = ifelse(Food_type == "Eggs", Food_quantity/(N_adults+N_children), 0)) %>% 
+  group_by(Questionnaire, Day, Meal) %>% 
+  summarize(Eggs_quantity_meal = sum(Eggs_quantity), .groups = 'drop') %>% 
+  group_by(Questionnaire) %>% 
+  summarize(Eggs_quantity_average = mean(Eggs_quantity_meal, na.rm=T)*3*365.25) %>% # Average per year
+  right_join(df_hous, by = "Questionnaire")
+
+# Compute average per capita rice consumption
+df_hous <- df_cons %>%
+  left_join(dplyr::select(df_hous, Questionnaire, N_meals), by = "Questionnaire") %>% 
+  mutate(Rice_quantity = ifelse(Food_type == "Rice", Food_quantity/(N_adults+N_children), 0)) %>% 
+  group_by(Questionnaire, Day, Meal) %>% 
+  summarize(Rice_quantity_meal = sum(Rice_quantity), .groups = 'drop') %>% 
+  group_by(Questionnaire) %>% 
+  summarize(Rice_quantity_average = mean(Rice_quantity_meal, na.rm=T)*3*365.25) %>% # Average per year
+  right_join(df_hous, by = "Questionnaire")
+
+# Compute average per capita meat consumption
+df_hous <- df_cons %>%
+  left_join(dplyr::select(df_hous, Questionnaire, N_meals), by = "Questionnaire") %>% 
+  mutate(Meat_quantity = ifelse(Food_type == "Meat", Food_quantity/(N_adults+N_children), 0)) %>% 
+  group_by(Questionnaire, Day, Meal) %>% 
+  summarize(Meat_quantity_meal = sum(Meat_quantity), .groups = 'drop') %>% 
+  group_by(Questionnaire) %>% 
+  summarize(Meat_quantity_average = mean(Meat_quantity_meal, na.rm=T)*3*365.25) %>% # Average per week
+  right_join(df_hous, by = "Questionnaire")
+
+### 4. Computing food and fish origin per household
+
+# Computing average food origin per household
+df_hous <- df_cons %>%
+  filter(!is.na(Food_origin)) %>%
+  group_by(Questionnaire) %>% 
+  summarize(Food_origin_average = 1/mean(Food_origin, na.rm=T), .groups = 'drop') %>%
+  right_join(df_hous, by = "Questionnaire")
+# Computing average fish origin per household
+df_hous <- df_cons %>%
+  filter(Food_type %in% c("Fish", "Dry fish"),
+         !is.na(Food_origin)) %>%
+  group_by(Questionnaire) %>% 
+  summarize(Fish_origin_average = 1/mean(Food_origin, na.rm=T), .groups = 'drop') %>%
+  right_join(df_hous, by = "Questionnaire")
+
+```
+
+
+# 5. Computing fisheries metrics
+
+```{r}
+
+## 1. CPUE and total yield per village
+
+# Add year to df_sessions
+df_sessions <- df_sessions %>% 
+  mutate(Year = format(as.Date(Date, format="%d/%m/%Y"),"%Y"))
+
+# Computing mean CPUE per barangay for 2019/2020 and 2021/2022 and adding it to df_hous
+df_hous <- df_sessions %>% 
+  filter(Habitat_1 %in% c("Batas", "Depla", "Mabini", "Sandoval", "Silanga"),
+         Gear %in% c("Hook and line", "Gillnet", "Speargun"),
+         Habitat_type %in% c("Coral reef", "Soft bottom"),
+         !is.na(Time_fish),
+         !is.na(Capture_kg)) %>%
+  mutate(CPUE = Capture_kg/Time_fish) %>% 
+  mutate(Year = format(as.Date(Date, format="%d/%m/%Y"),"%Y")) %>% 
+  filter(Year < 2023) %>%
+  mutate(Year = ifelse(Year %in% c(2019, 2020), 2019, 2022)) %>% # Grouping 2019 and 2020 vs. 2021 and 2022
+  group_by(Habitat_1, Year) %>% 
+  summarise(Mean_CPUE = mean(CPUE), .groups = "drop") %>% 
+  rename("Barangay" = "Habitat_1") %>% 
+  right_join(df_hous, by = c("Year", "Barangay"))
+
+# Average CPUE per Barangay per year
+df_cpue_barangay <- df_sessions %>% 
+  filter(Habitat_1 %in% c("Batas", "Depla", "Mabini", "Sandoval", "Silanga"),
+         Gear %in% c("Hook and line", "Gillnet", "Speargun"),
+         Habitat_type %in% c("Coral reef", "Soft bottom"),
+         !is.na(Time_fish),
+         !is.na(Capture_kg)) %>%
+  mutate(CPUE = Capture_kg) %>% 
+  mutate(Year = format(as.Date(Date, format="%d/%m/%Y"),"%Y")) %>% 
+  filter(Year < 2023) %>%
+  mutate(Year = ifelse(Year %in% c(2019, 2020), 2019, 2022)) %>% # Grouping 2019 and 2020 vs. 2021 and 2022
+  group_by(Habitat_1, Year) %>% 
+  summarise(Mean_CPUE = mean(CPUE), .groups = "drop") %>% 
+  rename("Barangay" = "Habitat_1")
+
+# Average CPUE per gear per Barangay across two years
+df_cpue_barangay_acrossyear <- df_sessions %>% 
+  filter(Habitat_1 %in% c("Batas", "Depla", "Mabini", "Sandoval", "Silanga"),
+         Gear %in% c("Hook and line", "Gillnet", "Speargun"),
+         Habitat_type %in% c("Coral reef", "Soft bottom"),
+         !is.na(Time_fish),
+         !is.na(Capture_kg)) %>%
+  mutate(CPUE = Capture_kg) %>% 
+  group_by(Habitat_1, Gear) %>% 
+  summarise(Mean_CPUE_gear = mean(CPUE), .groups = "drop") %>% 
+  rename("Barangay" = "Habitat_1")
+
+
+# Estimating mean CPUE per village/gear/year
+df_cpue_gear <- df_sessions %>%
+  filter(Habitat_1 %in% c("Batas", "Depla", "Mabini", "Sandoval", "Silanga"),
+         Gear %in% c( "Gillnet", "Hook and line", "Speargun")) %>% 
+  filter(Year < 2023) %>%
+  mutate(Year = ifelse(Year %in% c(2019, 2020), 2019, 2022)) %>% # Grouping 2019 and 2020 vs. 2021 and 2022
+  group_by(Habitat_1, Gear, Year) %>% 
+  summarize(Gear_CPUE = mean(Capture_kg, na.rm=T), .groups = "drop") %>% 
+  filter(Gear_CPUE != "NaN") %>% 
+  rename("Barangay" = "Habitat_1")
+
+# Number of households per village, from 2020 estimates
+df_population <- data.frame(Barangay = c("Batas", "Depla", "Mabini", "Sandoval", "Silanga"), Population = c(1220, 1274, 1698, 1355, 1587), N_household = c(305, 286, 433, 318, 260)) %>% 
+  left_join(select(filter(df_fishing_hh, Fisher == "Yes"), Barangay, per), by = "Barangay") %>% 
+  rename("Per_fishing_HH" = "per") %>% 
+  mutate(N_fishing_HH = Per_fishing_HH*N_household)
+
+# Average days of fishing activity per village per year
+df_fishing_activity <- df_fishers %>% 
+  rename("Gear" = "Gear_1") %>% 
+  filter(Gear %in% c( "Gillnet", "Hook and line", "Speargun")) %>% 
+  group_by(Barangay, Gear, Year) %>% 
+  summarize(Average_activity = mean(as.numeric(Fishing_days), na.rm=T), .groups = "drop")
+
+# Estimating the number of fishers per gear per village and adding to df_hous
+df_hous <- df_fishers %>%
+  rename("Gear" = "Gear_1") %>% 
+  filter(Gear %in% c("Gillnet", "Hook and line", "Speargun")) %>% # Filtering three main gears used
+  group_by(Barangay, Year, Gear) %>% 
+  count() %>% # Count number of gears per barangay per year
+  ungroup() %>% 
+  group_by(Barangay, Year) %>% 
+  mutate(Percent = n/sum(n)) %>% # Percentage of each gear per barangay per year
+  ungroup() %>% 
+  left_join(df_cpue_gear, by = c("Barangay", "Year", "Gear")) %>% # Adding CPUE per gear
+  left_join(df_cpue_barangay, by = c("Barangay", "Year")) %>% # Adding mean CPUE per barangay per year
+  left_join(df_cpue_barangay_acrossyear, by = c("Barangay", "Gear")) %>% # Adding mean CPUE per barangay across years
+  mutate(Gear_CPUE = ifelse(is.na(Gear_CPUE), Mean_CPUE_gear ,Gear_CPUE)) %>% # Adding missing gear CPUE as mean gear CPUE per barangay
+  mutate(Gear_CPUE = ifelse(is.na(Gear_CPUE), Mean_CPUE ,Gear_CPUE)) %>% # If still NA, adding missing gear CPUE as mean barangay CPUE
+  filter(!is.na(Percent)) %>% 
+  right_join(select(df_population, Barangay, N_fishing_HH), by = "Barangay") %>% # Adding number of fishing HH ber barangay
+  mutate(N_gear = round(Percent*N_fishing_HH)) %>% # Estimating total number of gears per barangay based on N fishing HH
+  left_join(df_fishing_activity, by = c("Barangay", "Year", "Gear")) %>% # Adding mean activity per gear/barngay/year
+  rowwise() %>% 
+  mutate(Tot_catch_week = Gear_CPUE*N_gear*Average_activity) %>% # Computing total gear catch as gear cpue x N gear x gear activity
+  group_by(Barangay, Year) %>% 
+  summarize(Tot_catch = sum(Tot_catch_week), .groups = "drop") %>% # Summarize total catch per barangay per year
+  mutate(Tot_catch = round(Tot_catch*52.1429/1000)) %>% # Total catch expressed in metric tons per year
+  right_join(df_hous, by = c("Barangay", "Year"))
+
+# Average total catch per barangay per year
+
+df_hous %>% 
+  group_by(Barangay) %>% 
+  summarize(Total_catch = mean(Tot_catch))
+
+# Estimating total consumption per year per Barangay (average per capita fish cons * total population)
+df_hous <- df_hous %>% 
+  group_by(Barangay, Year) %>% 
+  summarize(Average_fishcons = mean(Fish_quantity_average), .groups = "drop") %>% 
+  left_join(select(df_population, Barangay, Population), by = "Barangay") %>% 
+  rowwise() %>% 
+  mutate(Tot_fishcons = (Average_fishcons*Population)/1000) %>% 
+  right_join(df_hous, by = c("Barangay", "Year")) %>% 
+  select(-Average_fishcons, -Population) %>% 
+  mutate(Export = Tot_catch - Tot_fishcons)
+
+# Average fish consumption per village
+df_hous %>% 
+  group_by(Barangay) %>% 
+  summarize(Average_fishcons = round(mean(Fish_quantity_average)), .groups = "drop")
+
+# Average total export and consumption per barangay
+df_export_avg <- df_hous %>% 
+  group_by(Barangay) %>% 
+  summarize(Export = round(mean(Export)), Tot_catch = round(mean(Tot_catch)), Fishcons = round(mean(Tot_fishcons)), .groups = "drop") %>% 
+  rowwise() %>% 
+  mutate(Per_export = round((Export/Tot_catch)*100))
+
+# Average total export and consumption per barangay per year
+df_export_year <- df_hous %>% 
+  group_by(Barangay, Year) %>% 
+  summarize(Export = round(mean(Export)), Tot_catch = round(mean(Tot_catch)), Fishcons = round(mean(Tot_fishcons)), .groups = "drop") %>% 
+  rowwise() %>% 
+  mutate(Per_export = round((Export/Tot_catch)*100))
+
+## Computing price of fish per village per year
+
+df_hous <- df_cons %>% 
+  mutate(Year = ifelse(Survey_no == 1, 2019, 2022)) %>% 
+  filter(Food_type == "Fish", !is.na(Food_value)) %>% 
+  select(Barangay, Year, Food_value) %>% 
+  group_by(Barangay, Year) %>% 
+  summarise(Price_fish = mean(Food_value), .groups = "drop") %>% 
+  right_join(df_hous, by = c("Barangay", "Year"))
+
+# Average price of fish for reef/pelagic
+df_cons %>% 
+  filter(Food_type == "Fish", !is.na(Food_value), !is.na(Seafood_habitat)) %>% 
+  group_by(Seafood_habitat, Survey_no) %>% 
+  summarise(Price = mean(Food_value))
+
+# Average consumption of reef vs. small pelagic
+mean(df_hous$Small_pelagic_average) # 22 kg/year
+mean(df_hous$Reef_fish_average) # 21 kg/year
+mean(df_hous$Large_pelagic_average) # 1 kg/year
+
+# Percentage of food insecure households
+length(which(df_hous$Energy_percent < 100))/nrow(df_hous) # 47 % energy
+length(which(df_hous$Protein_percent < 100))/nrow(df_hous) # 31% protein
+length(which(df_hous$Nutrient_intake < 400))/nrow(df_hous) # 93% less than 4 micronutrients  
+```
+
+
+# 6. Statistical analyses
+
+```{r}
+### 1. Food security ~ consumption
+
+## 1.1. GLMs
+
+# Compute GLMs
+model_energy <- glm(Energy_percent ~ Veg_quantity_average + Reef_fish_average + Pelagic_fish_average + Seafood_quantity_average + Meat_quantity_average + Cans_quantity_average, data = df_hous)
+model_protein <- glm(Protein_percent ~ Veg_quantity_average + Reef_fish_average + Pelagic_fish_average + Seafood_quantity_average + Meat_quantity_average + Cans_quantity_average, data = df_hous)
+model_nutrient <- glm(Nutrient_intake ~ Veg_quantity_average + Reef_fish_average + Pelagic_fish_average + Seafood_quantity_average + Meat_quantity_average + Cans_quantity_average, data = df_hous)
+
+# Save GLM data in a table
+glm_data <- rbind(get_model_data(model_energy, type = c("est")), get_model_data(model_protein, type = c("est")), get_model_data(model_nutrient, type = c("est")))
+glm_data$Model <- c(rep("Energy intake", 6),
+                    rep("Protein intake", 6),
+                    rep("Micronutrient intake", 6))
+glm_data <- glm_data %>% 
+  dplyr::select(Model, term, estimate, std.error, conf.low, conf.high, p.value, p.label, group)
+glm_data$term <- glm_data$term %>%
+  fct_recode(
+    "Pelagic fish" = "Pelagic_fish_average",
+    "Other seafood" = "Seafood_quantity_average",
+    "Eggs" = "Eggs_quantity_average",
+    "Meat" = "Meat_quantity_average",
+    "Canned food" = "Cans_quantity_average",
+    "Reef fish" = "Reef_fish_average",
+    "Vegetables" = "Veg_quantity_average"
+  )
+
+# Significant P
+glm_data <- glm_data %>% 
+  mutate(Significance = ifelse(p.value< 0.05, "Yes", "No"))
+
+# Order factor
+glm_data$Model = factor(glm_data$Model, levels = c("Energy intake", "Protein intake", "Micronutrient intake"))
+
+# Plot GLMs
+plot_glms_fs_cons <- glm_data %>% 
+  filter(Model %in% c("Energy intake", "Protein intake", "Micronutrient intake")) %>% 
+  ggplot(aes(x = term, y = estimate, col = group, shape = Significance)) +
+  geom_point(size = 3, show.legend = FALSE) +
+  geom_text(aes(label = p.label), nudge_x = .35, show.legend = FALSE) +
+  geom_linerange(aes(ymin = conf.low, ymax = conf.high), show.legend = FALSE) +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha=.3) +
+  coord_flip() + 
+  facet_wrap(~ Model, scales = "free_x") +
+  theme_perso() +
+  labs(x = "", y = "Standardized estimate", title = "") +
+  scale_color_fish_d(option = "Etheostoma_spectabile") +
+  scale_shape_manual(values = c(1, 16)) +
+  theme(axis.line.x = element_line(linewidth = .25), 
+          axis.line.y = element_line(linewidth = .25))
+plot_glms_fs_cons
+
+# 1.2.Plot fish consumption vs. food security metrics + CPUE
+
+plot_fishcons_energy <- df_hous %>% 
+  ggplot(aes(x = Fish_quantity_average, y = Energy_percent)) +
+  geom_point(alpha = .3) +
+  geom_smooth(col = "black", method = 'loess', formula = 'y ~ x') +
+  labs(x = "", y = "Energy intake") +
+  ylim(0,119) +
+  theme_perso()
+
+plot_fishcons_protein <- df_hous %>% 
+  ggplot(aes(x = Fish_quantity_average, y = Protein_percent)) +
+  geom_point(alpha = .3) +
+  geom_smooth(col = "black", method = 'loess', formula = 'y ~ x') +
+  labs(x = "", y = "Protein intake") +
+  ylim(0,119) +
+  theme_perso()
+
+plot_fishcons_nutrients <- df_hous %>% 
+  ggplot(aes(x = Fish_quantity_average, y = Nutrient_intake)) +
+  geom_point(alpha = .3) +
+  geom_smooth(col = "black", method = 'loess', formula = 'y ~ x') +
+  labs(x = "", y = "Micronutrient intake") +
+  ylim(0,500) +
+  theme_perso()
+plot_fishcons_foodsecurity <- ggarrange(plot_fishcons_energy, plot_fishcons_protein, plot_fishcons_nutrients,
+                                        ncol = 1, labels = c("A", "B", "C"))
+plot_fishcons_foodsecurity
+
+## 1.3. Plot average capita consumption per food type (±SE) and price
+
+values <- df_hous %>%
+  select(Fish_quantity_average, Veg_quantity_average, Cans_quantity_average, Meat_quantity_average, Seafood_quantity_average) %>%
+  rename("Fish" = "Fish_quantity_average", 
+         "Vegetables" = "Veg_quantity_average",
+         "Canned food" = "Cans_quantity_average",
+         "Meat" = "Meat_quantity_average",
+         "Other seafood" = "Seafood_quantity_average") %>% 
+  dplyr::summarise_if(is.numeric, list(mean = ~mean(.), sd = ~sd(.) , se = ~sd(.)/sqrt(n()))) %>% 
+  pivot_longer(cols = "Fish_mean":"Other seafood_se")
+df <- data.frame(Category = c("Fish", "Vegetables", "Canned food", "Meat", "Other seafood"), 
+                 Mean = values[1:5,]$value, SD = values[6:10,]$value, SE = values[11:15,]$value)
+df <- df_cons %>%
+  filter(Food_type %in% c("Tins", "Meat", "Vegetables", "Fish", "Other seafood"), !is.na(Food_value)) %>% 
+  group_by(Food_type) %>% 
+  summarise(Price = mean(Food_value)) %>% 
+  mutate(Price = round(ifelse(Food_type == "Tins", Price/0.155, Price))) %>% 
+  mutate(Food_type = c("Fish", "Meat", "Other seafood", "Canned food", "Vegetables")) %>% 
+  rename("Category" = "Food_type") %>% 
+  right_join(df, by = "Category")
+plot_products_consumption <- ggplot(df, aes(x = reorder(Category, -Mean), y = Mean, fill = Price)) +
+  geom_bar(stat = "identity", position = "dodge", colour="black") +
+  geom_errorbar(aes(ymin = Mean-SE, ymax = Mean+SE), width = .2) +
+  scale_fill_fish(option = "Esox_lucius") +
+  labs(x = "", y = "Per capita consumption (kg ±SE)", fill = "Average price (PhP/kg)") +
+  theme_perso() +
+  theme(legend.position = c(0.80, 0.72))
+plot_products_consumption
+rm(values, df)
+
+### 2. Factors influencing fish consumption
+
+## 2.1. GLMs fish consumpsion ~ factors
+
+# Compute GLMs
+model_pelagic_fish <- glm(Pelagic_fish_average ~ Season + Price_meal_average + Fisher + N_household + Export, data = df_hous)
+model_reef_fish <- glm(Reef_fish_average ~ Season + Price_meal_average + Fisher + N_household + Export, data = df_hous)
+
+# Save GLM data in a table
+glm_data <- rbind(get_model_data(model_pelagic_fish, type = c("std")), get_model_data(model_reef_fish, type = c("std")))
+glm_data$Model <- c(rep("Pelagic fish", 5),
+                    rep("Reef fish", 5))
+glm_data <- glm_data %>% 
+  dplyr::select(Model, term, estimate, std.error, conf.low, conf.high, p.value, p.label, group)
+glm_data$term <- glm_data$term %>%
+  fct_recode(
+    "Wet season" = "SeasonHabagat",
+    "Food expenditure" = "Price_meal_average",
+    "Household size" = "N_household",
+    "Total fish exports" = "Export",
+    "Fishing household" = "FisherYes"
+  )
+
+# Significant P
+glm_data <- glm_data %>% 
+  mutate(Significance = ifelse(p.value< 0.05, "Yes", "No"))
+
+# Order factor
+glm_data$Model = factor(glm_data$Model, levels = c("Reef fish", "Pelagic fish"))
+
+# Plot GLMs
+plot_glms_fc <- glm_data %>% 
+  filter(Model %in% c("Reef fish", "Pelagic fish")) %>% 
+  ggplot(aes(x = term, y = estimate, col = group, shape = Significance)) +
+  geom_point(size = 3, show.legend = FALSE) +
+  geom_text(aes(label = p.label), nudge_x = .35, show.legend = FALSE) +
+  geom_linerange(aes(ymin = conf.low, ymax = conf.high), show.legend = FALSE) +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha=.3) +
+  coord_flip() + 
+  facet_wrap(~Model, scales = "free_x") +
+  theme_perso() +
+  labs(x = "", y = "Standardized estimate", title = "") +
+  scale_color_fish_d(option = "Etheostoma_spectabile") +
+  scale_shape_manual(values = c(1, 16)) +
+  theme(axis.line.x = element_line(linewidth = .25), 
+          axis.line.y = element_line(linewidth = .25))
+plot_glms_fc
+
+```
+
+# 7. Dataviz
+
+```{r}
+### 1. Factors driving food security
+
+## Scatterplots food securitu metrics ~ fish consumption
+
+# Energy intake
+plot_fishcons_energy <- df_hous %>% 
+  ggplot(aes(x = Fish_quantity_average, y = Energy_percent)) +
+  geom_point(alpha = .3) +
+  geom_smooth(col = "black", method = 'loess', formula = 'y ~ x') +
+  labs(x = "", y = "Energy intake") +
+  ylim(0,119) +
+  theme_perso()
+# Protein intake
+plot_fishcons_protein <- df_hous %>% 
+  ggplot(aes(x = Fish_quantity_average, y = Protein_percent)) +
+  geom_point(alpha = .3) +
+  geom_smooth(col = "black", method = 'loess', formula = 'y ~ x') +
+  labs(x = "Fish consumption (kg/year)", y = "Protein intake") +
+  ylim(0,119) +
+  theme_perso()
+# Micronutrients
+plot_fishcons_nutrients <- df_hous %>% 
+  ggplot(aes(x = Fish_quantity_average, y = Nutrient_intake)) +
+  geom_point(alpha = .3) +
+  geom_smooth(col = "black", method = 'loess', formula = 'y ~ x') +
+  labs(x = "", y = "Micronutrient intake") +
+  ylim(0,500) +
+  theme_perso()
+
+# Plot
+plot_fishcons_foodsecurity <- ggarrange(plot_fishcons_energy, plot_fishcons_protein, plot_fishcons_nutrients,
+                                        ncol = 3, labels = c("A", "B", "C"))
+# Assemble plots
+plot_foodsecurity <- ggarrange(plot_fishcons_foodsecurity, plot_glms_fs_cons, labels = c("", "D"), nrow = 2)
+plot_foodsecurity
+ggsave("./../Output/plot_foodsecurity.png", height = 5.5, width = 7.5, dpi = 300)
+
+
+### 2. Factors driving fish consumption
+
+plots_fishcons <- ggarrange(plot_products_consumption, plot_glms_fc, nrow = 2, labels = c("A", "B"))
+ggsave("./../Output/plots_fishcons.png", height = 6, width = 5, dpi = 300)
+
+
+### 3. Importance of exports for fish accessibility
+
+## Local consumption and export of fish products
+
+# Origin of fish consumed for each Barangay (categories)
+plot_origin_cons <- df_cons %>% 
+  mutate(Food_origin = fct_rev(as.factor(Food_origin))) %>% 
+  filter(Food_type %in% c("Fish", "Dry fish")) %>%
+  group_by(Barangay) %>% 
+  count(Food_origin, name = "N") %>% 
+  ungroup() %>% 
+  filter(!is.na(Food_origin)) %>% 
+  ggplot(., aes(x = Barangay, y = N*100, fill = as.factor(Food_origin))) +
+  geom_bar(stat = "identity", position = "fill") +
+  labs(title = "Origin of fish consumed", x = "", y = "", fill ="") +
+  scale_fill_fish_d(option = "Ostracion_whitleyi", labels=c('Bought outside the village', 'Bought from middleman', 'Bought from fisher', 'Gift',  'Own catch')) +
+  theme_perso()
+
+# Destination of fish per barangay
+plot_fish_export <- df_fishers %>% 
+  mutate(Dest_t = factor(Dest_t, levels = c("Export", "Market", "Middleman", "Village", "Subsistence"))) %>% 
+  group_by(Barangay) %>% 
+  count(Dest_t, name = "N") %>% 
+  ungroup() %>% 
+  filter(!is.na(Dest_t)) %>% 
+  ggplot(., aes(x = Barangay, y = N, fill = Dest_t)) +
+  geom_bar(stat = "identity", position = "fill") +
+  labs(title = "Catch destination", x = "", y = "", fill ="                          ") +
+  scale_fill_fish_d(option = "Ostracion_whitleyi") +
+  theme_perso()
+
+# Export over production
+plot_fish_export_production <- df_hous %>%
+  group_by(Barangay) %>% 
+  summarize(Tot_fishcons = mean(Tot_fishcons), Export = mean(Export)) %>% 
+  select(Barangay, Tot_fishcons, Export) %>% 
+  rename("Local consumption" = "Tot_fishcons") %>% 
+  pivot_longer(cols = c("Local consumption", "Export")) %>% 
+  ggplot(., aes(x = Barangay, y = value, fill = name)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Total consumption and export", x = "", y = "Fish (tons/year)", fill ="                          ") +
+  scale_fill_fish_d(option = "Ostracion_whitleyi") +
+  theme_perso()
+
+# Arrange plot origin consumption and destination of export
+plot_export <- ggarrange(plot_origin_cons, plot_fish_export, plot_fish_export_production, nrow = 3, labels = c("A", "B", "C"), align = "hv")
+plot_export
+ggsave("./../Output/Plot_export.png", height = 5.5, width = 5.5, dpi = 400)
+
+```
+
+
+
+

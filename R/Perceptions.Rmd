@@ -1,0 +1,182 @@
+---
+title: "Cleaning"
+author: "Anna Celis"
+date: "2023-01-20"
+output: html_document
+---
+
+
+```{r}
+rm(list = ls())
+
+#libraries
+library(tidyverse)
+library(readxl)
+
+#data
+df <- read_xlsx("./../Data/Macmon_data.xlsx")
+df_hous <- read_xlsx("./../Data/Consumption_SFB.xlsx", sheet = 2)
+```
+
+
+# 1. Cleaning data
+
+```{r}
+
+## Renaming columns
+
+colnames(df)[colnames(df) == "Survey date"] <- "survey_date"
+colnames(df)[colnames(df) == "1a. Where are you from?"] <- "place_origin"
+colnames(df)[colnames(df) == "1b. How many years have you lived in this village?"] <- "residential_period"
+colnames(df)[colnames(df) == "2. Age"] <- "age"
+colnames(df)[colnames(df) == "3. Education level"] <- "formal_education"
+colnames(df)[colnames(df) == "4. Ethnicity"] <- "ethnicity"                      
+colnames(df)[colnames(df) == "5. Religion"] <- "religion"                      
+colnames(df)[colnames(df) == "6. Marital status"] <- "marital_status"                      
+colnames(df)[colnames(df) == "7. Head of household?"] <- "household_status"  
+colnames(df)[colnames(df) == "8. Gender"] <- "gender"
+colnames(df)[colnames(df) == "9. How many community organizations are you involved in?"] <- "participation_community_organizations"
+colnames(df)[colnames(df) == "Adult males"] <- "adult_males"
+colnames(df)[colnames(df) == "Adult females"] <- "adult_females"
+colnames(df)[colnames(df) == "Male children"] <- "male_children"
+colnames(df)[colnames(df) == "Female children"] <- "female_children"
+colnames(df)[colnames(df) == "Livelohood activity"] <- "livelihood_activity"
+colnames(df)[colnames(df) == "11b. Is fishing the primary livelihood of the respondent?"] <- "fishing_primary"
+colnames(df)[colnames(df) == "12. If the respondent is a fisher ask them: How much do you agree with this statement? I could easily stop fishing and make my living on land"] <- "fisheries_occupational_attachment"
+colnames(df)[colnames(df) == "11b. Is fishing the primary livelihood of the respondent?"] <- "fishing_primarylivelihood"
+colnames(df)[colnames(df) == "12. If the respondent is a fisher ask them: How much do you agree with this statement? I could easily stop fishing and make my living on land"] <- "easily_stopfishing"
+colnames(df)[colnames(df) == "13a. If your household engages in fishing, which fishing gears does your HOUSEHOLD use?"] <- "household_fishgear"
+colnames(df)[colnames(df) == "14a. I realize that some days you catch a lot of finfish, while other days you may not catch many finfish. On a normal day, how much fish do you catch? How many hours do you spend fishing? How much is that catch worth?"] <- "fishcatch"
+colnames(df)[colnames(df) == "Number of hours (fishing and traveling) on a normal day"] <- "fishcatch_hours"
+colnames(df)[colnames(df) == "Total value of catch (local currency)"] <- "fishcatch_value"
+colnames(df)[colnames(df) == "Percent eat"] <- "percent_eat"
+colnames(df)[colnames(df) == "Percent sell"] <- "percent_sell"
+colnames(df)[colnames(df) == "Percent catch"] <- "percent_catch"
+colnames(df)[colnames(df) == "Percent giveaway"] <- "percent_giveaway"
+colnames(df)[colnames(df) == "16. If you were to get 50% less catch all year, what would you do?"] <- "resource_decline_response"
+colnames(df)[colnames(df) == "17. In general, how often do you and your household eat locally caught fish or seafood from the sea that was caught by you or someone in your community?"] <- "local_fish_consumption"
+colnames(df)[colnames(df) == "18. Over the past 5 years has the number of fish in the sea changed?"] <- "fish_timechange"
+colnames(df)[colnames(df) == "19a. What can be done to increase the number of fish in the sea around here?"] <- "increasefish_action"
+colnames(df)[colnames(df) == "19b. Were human actions mentioned?"] <- "humanaction_mention"
+colnames(df)[colnames(df) == "a) People in your village"] <- "trust_peopleinvillage" 
+colnames(df)[colnames(df) == "b) Village leaders"] <- "trust_villageleaders"
+colnames(df)[colnames(df) == "c) Marine resource management group"] <- "trust_marinegroups"
+colnames(df)[colnames(df) == "d) NGOs"] <- "trust_ngo"
+colnames(df)[colnames(df) == "e) Government"] <- "trust_government"
+colnames(df)[colnames(df) == "22a. In general, does fisheries management affect this COMMUNITY?"] <- "fm_affect_community"
+colnames(df)[colnames(df) == "22d. Considering these positive and negative impacts, what is the overall level of impact of fisheries management on this community?"] <- "fm_overallimpact_community"
+colnames(df)[colnames(df) == "23a. In general, does fisheries management affect YOU?"] <- "fm_affect_personal"
+colnames(df)[colnames(df) == "23d. Considering these positive and negative impacts, what is the overall level of impact of fisheries management on you?"] <- "fm_overallimpact_personal"
+colnames(df)[colnames(df) == "26. In general, do you think the distribution of the positive and negative impacts from the management here is fair?"] <- "fm_impact_distribution"
+colnames(df)[colnames(df) == "27a. In general, do you think management has affected the NUMBER of fish? If yes, how has the number of fish been affected?"] <- "fm_fishnumber_change"
+colnames(df)[colnames(df) == "28. In general, do you think management has made it easier or harder to catch fish  (in terms of time, effort, or travel distance)?"] <- "fm_fisheffort_change"
+colnames(df)[colnames(df) == "29. In general, do you think management has affected the reliability of what you can catch?"] <- "fm_fishreliability_change"
+colnames(df)[colnames(df) == "30. In general, do you support/agree with the management here?"] <- "fm_support"
+colnames(df)[colnames(df) == "31. Currently, are you involved in decisions about marine resource use or managing marine resources? For example, have you been to any meetings about marine resources? If yes, how?"] <- "management_involved"
+colnames(df)[colnames(df) == "32. How much do you agree or disagree with this statement People like me have influence on management of marine resources."] <- "management_influence"
+colnames(df)[colnames(df) == "33. In general, do you think THE WAY that decisions are made about marine resource use and management are fair?"] <- "management_decision"
+colnames(df)[colnames(df) == "34. Is there any conflict over marine resources here? If yes how often does this conflict occur?"] <- "marineresource_conflict"
+colnames(df)[colnames(df) == "37a. It would be great to know more about how you feel about your life here. All things considered has your satisfaction with your life as a whole changed over the last three years?"] <- "life_change"
+colnames(df)[colnames(df) == "38. Supposing that for some reason you were moving away from [name of village] how would you feel about leaving?"] <- "place_attatchment"
+colnames(df)[colnames(df) == "22b. What are the positive impacts of fisheries management for this COMMUNITY?"] <- "positiveimpacts_community"
+colnames(df)[colnames(df) == "22c. What are the negative impacts of fisheries management for this COMMUNITY?"] <- "negativeimpacts_community"
+colnames(df)[colnames(df) == "23b. What are the positive impacts of fisheries management for YOU?"] <- "positiveimpacts_personal"
+colnames(df)[colnames(df) == "23c. What are the negative impacts of fisheries management for YOU?"] <- "negativeimpacts_personal"
+colnames(df)[colnames(df) == '12. If the respondent is a fisher ask them: How much do you agree with this statement? "I could easily stop fishing and make my living on land"'] <- "easy_stop_fishing"
+```
+
+
+# 2. Analyses
+
+```{r}
+# Percentage of respondents for who it would be easy/hard to stop fishing
+df %>% 
+  mutate(Fisher = case_when(if_any(starts_with("Job"), ~ .x == "Fishing") ~ "Yes", TRUE ~ "No")) %>% 
+  filter(!is.na(easy_stop_fishing), Fisher == "Yes") %>% 
+  group_by(easy_stop_fishing) %>% 
+  summarize(n = n(), .groups = "drop") %>% 
+  mutate(per = n/sum(n))
+
+# Percentage of respondents that believe fish has been decreasing: 71% of respondents believe fish stocks have decreased or decreased a lot
+df %>% 
+  group_by(fish_timechange) %>% 
+  summarize(n = n(), .groups = "drop") %>% 
+  mutate(per = n/sum(n))
+
+# Mention of human actions to improve fish stocks
+df %>% 
+  group_by(humanaction_mention) %>% 
+  summarize(n = n(), .groups = "drop") %>% 
+  mutate(per = n/sum(n))
+
+# Impact of fisheries management on fish stocks:43% of respondents think MPAs increased fish stocks, only 2% said it decreased
+df %>% 
+  group_by(fm_fishnumber_change) %>% 
+  summarize(n = n(), .groups = "drop") %>% 
+  mutate(per = n/sum(n))
+
+# Impact of fisheries management on fishing effort: 31% think fishing is easier, 23% think it is harder, 32% do not know
+df %>% 
+  filter(!is.na(fm_fisheffort_change)) %>% 
+  group_by(fm_fisheffort_change) %>% 
+  summarize(n = n(), .groups = "drop") %>% 
+  mutate(per = n/sum(n))
+  
+# Perception of lacking fish to eat: 62% declared they considered they regularly lacked fish to eat
+df_hous %>% 
+  filter(!is.na(Lack_fish)) %>%
+  group_by(Lack_fish) %>% 
+  summarize(n = n()) %>% 
+  mutate(per = n/sum(n))
+
+# Perception of lacking fish to eat per village
+df_hous %>% 
+  filter(!is.na(Lack_fish)) %>%
+  group_by(Lack_fish, Barangay) %>% 
+  summarize(n = n(), .groups = "drop") %>% 
+  group_by(Barangay) %>% 
+  mutate(per = n/sum(n))
+
+
+# Perception of lacking fish to eat: different reasons => 31% lack of resources, 18% lack of sellers, 7% not fishing, 22% small catch, 22% weather
+df_hous %>% 
+  select(Lack_fish_reason1, Lack_fish_reason2) %>% 
+  pivot_longer(cols = c("Lack_fish_reason1", "Lack_fish_reason2")) %>% 
+  filter(!is.na(value)) %>%
+  group_by(value) %>% 
+  summarize(n = n()) %>% 
+  mutate(per = n/sum(n))
+
+# Other products consumed when fish is not available: Veg = 59%, Cans = 13%, Other = 13%, Other seafood = 8%, Meat = 7%
+df_hous %>% 
+  select(Other_cons1, Other_cons2, Other_cons3) %>% 
+  pivot_longer(cols = c("Other_cons1", "Other_cons2", "Other_cons3")) %>% 
+  mutate(value = value %>% fct_recode(
+    "Meat" = "Chicken",
+    "Other" = "Coffee",
+    "Fish" = "Dry fish",
+    "Fish" = "Dried fish",
+    "Other" = "Eggs",
+    "Other" = "Noodles",
+    "Other" = "Salt",
+    "Other seafood" = "Seaweeds",
+    "Other seafood" = "Shells",
+    "Other seafood" = "Shrimp",
+    "Other" = "Soy sauce & oil"
+  )) %>% 
+  filter(!is.na(value), value != "Fish") %>%
+  group_by(value) %>% 
+  summarize(n = n()) %>% 
+  mutate(per = n/sum(n))
+  
+
+```
+
+
+
+
+
+
+
+
+
