@@ -103,6 +103,10 @@ df_hous <- df_hous %>%
 # Data format for catch
 df_sessions$Capture_kg <- as.numeric(df_sessions$Capture_kg)
 df_sessions$Time_fish <- as.numeric(df_sessions$Time_fish)
+
+# Classifying soft bottom associated fish (mostly Nemipteridae, Leiognathidae) in the same category as small pelagic
+df_nutrition <- df_nutrition %>% 
+  mutate(Seafood_habitat = ifelse(Seafood_habitat == "Soft bottom", "Small pelagic", Seafood_habitat))
 ```
 
 # 3. Descriptive statistics
@@ -710,7 +714,6 @@ glm_data$term <- glm_data$term %>%
   fct_recode(
     "Pelagic fish" = "Pelagic_fish_average",
     "Other seafood" = "Seafood_quantity_average",
-    "Eggs" = "Eggs_quantity_average",
     "Meat" = "Meat_quantity_average",
     "Canned food" = "Cans_quantity_average",
     "Reef fish" = "Reef_fish_average",
@@ -807,8 +810,8 @@ rm(values, df)
 ## 2.1. GLMs fish consumpsion ~ factors
 
 # Compute GLMs
-model_pelagic_fish <- glm(Pelagic_fish_average ~ Season + Price_meal_average + Fisher + N_household + Export, data = df_hous)
-model_reef_fish <- glm(Reef_fish_average ~ Season + Price_meal_average + Fisher + N_household + Export, data = df_hous)
+model_pelagic_fish <- glm(Pelagic_fish_average ~ Season + Price_meal_average + Fisher + N_household + Tot_catch, data = df_hous)
+model_reef_fish <- glm(Reef_fish_average ~ Season + Price_meal_average + Fisher + N_household + Tot_catch, data = df_hous)
 
 # Save GLM data in a table
 glm_data <- rbind(get_model_data(model_pelagic_fish, type = c("std")), get_model_data(model_reef_fish, type = c("std")))
@@ -821,7 +824,7 @@ glm_data$term <- glm_data$term %>%
     "Wet season" = "SeasonHabagat",
     "Food expenditure" = "Price_meal_average",
     "Household size" = "N_household",
-    "Total fish exports" = "Export",
+    "Fishing yield" = "Tot_catch",
     "Fishing household" = "FisherYes"
   )
 
@@ -950,6 +953,67 @@ ggsave("./../Output/Plot_export.png", height = 5.5, width = 5.5, dpi = 400)
 
 ```
 
+# 8. Appendix
+
+```{r}
+# Number of fishers per habitat, per village
+plot_fished_habitats <- df_fishers %>% 
+  pivot_longer(cols = c(Hab_1, Hab_2), values_to = "Habitat") %>% 
+  group_by(Barangay) %>% 
+  filter(!is.na(Habitat), Habitat %in% c("Coral reef", "Soft bottom")) %>% 
+  mutate(Habitat = ifelse(Habitat == "Soft bottom", "Pelagic/\nSoft bottom", Habitat)) %>% 
+  count(Habitat) %>% 
+  ggplot(aes(x = fct_rev(Barangay), y = n, fill = Habitat)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_fill_fish_d(option = "Alosa_fallax", direction = -1) +
+  coord_flip() +
+  labs(x = "", y = "", title = "Habitat targeted by fishers", fill = "") +
+  theme_perso() +
+  guides(fill=guide_legend(reverse = TRUE)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Count to get %
+df_fishers %>% 
+  pivot_longer(cols = c(Hab_1, Hab_2), values_to = "Habitat") %>% 
+  group_by(Barangay) %>% 
+  filter(!is.na(Habitat), Habitat %in% c("Coral reef", "Soft bottom")) %>% 
+  count(Habitat) %>% 
+  mutate(per = n/sum(n))
+  
+# Fish consumed per habitat
+plot_fish_consumed <- df_cons %>% 
+  filter(Food_type == "Fish") %>% 
+  mutate(Seafood_habitat = ifelse(Seafood_habitat %in% c("Large pelagic", "Small pelagic"), "Pelagic", Seafood_habitat)) %>% 
+  group_by(Barangay, Seafood_habitat) %>% 
+  count() %>% 
+  ungroup() %>% 
+  filter(!is.na(Seafood_habitat)) %>% 
+  ggplot(aes(x = fct_rev(Barangay), y = n, fill = Seafood_habitat)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_fill_fish_d(option = "Alosa_fallax", direction = -1) +
+  coord_flip() +
+  labs(x = "", y = "", title = "Fish consumed by households", fill = "") +
+  theme_perso() +
+  guides(fill=guide_legend(reverse = TRUE)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+#Count to get %
+df_cons %>% 
+  filter(Food_type == "Fish") %>% 
+  mutate(Seafood_habitat = ifelse(Seafood_habitat %in% c("Large pelagic", "Small pelagic"), "Pelagic", Seafood_habitat)) %>% 
+  group_by(Barangay, Seafood_habitat) %>% 
+  count() %>% 
+  ungroup() %>% 
+  group_by(Barangay) %>% 
+  filter(!is.na(Seafood_habitat)) %>% 
+  mutate(per = n/sum(n))
+
+## Arrange two plots in one
+ggarrange(plot_fished_habitats, plot_fish_consumed, nrow = 1, common.legend = TRUE, legend = "bottom",
+          labels = c("A", "B"))
+ggsave("./../Output/Plot_fish_habitats.png", height = 3, width = 7.5, bg = "white")
+
+```
 
 
 
